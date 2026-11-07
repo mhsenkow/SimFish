@@ -103,6 +103,10 @@ static func note_turn_intent(f: Fish, desired_dir: Vector3, dt: float) -> void:
 		return
 	# dt scales how hard the lead commits this frame (leaders pass a larger dt).
 	var commit: float = clampf(dt * 18.0, 0.35, 1.0)
+	# The head leads a turn the body is about to make. A near-stopped fish
+	# barely turns, so a full lead held its head cocked for seconds and read
+	# as askew rather than looking; the eyes (gaze below) carry that look.
+	commit *= clampf(f.speed / maxf(f.max_speed * 0.35, 0.05), 0.25, 1.0)
 	f.set_meta("_ant_head_lead", clampf(dyaw * commit, -0.3, 0.3))
 	f.set_meta("_ant_bank_lead", clampf(-dyaw * 0.45 * commit, -0.35, 0.35))
 	# Eyes lead the head by ~60 ms (#144): shove gaze toward the turn.

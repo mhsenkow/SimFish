@@ -624,8 +624,11 @@ var stress: float = 0.0
 var _chem_o2_penalty: float = 0.0
 # Felt-body oxygen channels (SENTIENCE_THE_LOOM #178). Breath hunger is the
 # effective-O₂ deficit vs the species set-point; gill burn is NH₃/nitrite sting.
-# Both are written by FishProtoself.tick and read by felt vocabulary / tells.
+# Both are written by FishProtoself.tick and read by felt vocabulary / tells
+# (through set()/get(), which the analyzer cannot see).
+@warning_ignore("unused_private_class_variable")
 var _breath_hunger: float = 0.0
+@warning_ignore("unused_private_class_variable")
 var _gill_burn: float = 0.0
 # Staggered maturation / senescence (#39): a small per-individual lifespan
 # offset so siblings born in the same clutch don't all mature and die on the
@@ -9158,8 +9161,11 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		pec_amp = FishEaseArcs.damp_pec_amp(self, pec_amp, dt)
 	# #172: caudal spread reads when the lateral wave is foreshortened.
 	pec_spread += float(cam_rel.get("spread", 0.0)) * 0.55
-	if _tail_pivot != null and float(cam_rel.get("spread", 0.0)) > 0.0:
-		_tail_pivot.scale.x = lerpf(_tail_pivot.scale.x, 1.0 + float(cam_rel["spread"]) * 0.4, 0.3)
+	# Ease back to 1 as well: gating this on spread > 0 left the caudal
+	# widened after the camera moved off broadside.
+	if _tail_pivot != null:
+		_tail_pivot.scale.x = lerpf(_tail_pivot.scale.x,
+			1.0 + float(cam_rel.get("spread", 0.0)) * 0.4, 1.0 - exp(-dt * 10.0))
 	# No twin pectorals (#382): each side breathes on its own noise.
 	_pose_t += dt
 	var seed_i: int = get_instance_id() & 0xffff

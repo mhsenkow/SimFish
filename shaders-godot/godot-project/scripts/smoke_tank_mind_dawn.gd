@@ -12,6 +12,7 @@ class FakeSim:
 	var dissolved_o2: float = 0.8
 	var stability: float = 0.8
 	var fish: Array = []
+	@warning_ignore("unused_private_class_variable")
 	var _tank_mind: Variant = null
 	var _night_runtime: Dictionary = {}
 

@@ -116,7 +116,10 @@ static func camera_relative_tail_boost(f: Fish, cam: Camera3D) -> Dictionary:
 	if align > 0.65:
 		var t: float = smoothstep(0.65, 0.95, align)
 		out["spread"] = t * 0.35
-		out["heave"] = t * 0.08
+		# No heave. It was a constant +0.08 lift of the tail pivot (not a bob
+		# with the beat), so every broadside fish carried its tail about a
+		# voxel above the body line - the tail read as raised and detached
+		# from the peduncle. A real tail seen side-on simply foreshortens.
 		out["amp"] = lerpf(1.0, 0.72, t)  # quiet the invisible lateral amp
 	return out
 

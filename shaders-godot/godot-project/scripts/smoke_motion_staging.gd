@@ -30,12 +30,11 @@ func _initialize() -> void:
 	host.add_child(cam_heave)
 	cam_heave.global_position = Vector3(4, 3, 0)  # broadside to heading -Z
 	var boost: Dictionary = MotionStaging.camera_relative_tail_boost(f, cam_heave)
-	t.check(float(boost.get("heave", 0.0)) > 0.0, "broadside lift asks for heave")
-	var y: float = 0.0
-	for _i in 180:
-		y = lerpf(y, float(boost["heave"]), 0.35)
-	t.check(absf(y - float(boost["heave"])) < 0.01, "heave converges to offset, not runaway")
-	t.check(absf(y) <= 0.09, "heave stays within tip lift range")
+	# The constant broadside lift detached the tail from the body; broadside
+	# now only widens the caudal and quiets the hidden lateral beat.
+	t.check(is_zero_approx(float(boost.get("heave", 0.0))), "broadside never lifts the tail")
+	t.check(float(boost.get("spread", 0.0)) > 0.0, "broadside widens the caudal")
+	t.check(float(boost.get("amp", 1.0)) < 1.0, "broadside quiets the foreshortened beat")
 	cam_heave.queue_free()
 	# #175
 	t.check(MotionStaging.begin_big_event(f.global_position, &"a", 1.0), "event 1 ok")

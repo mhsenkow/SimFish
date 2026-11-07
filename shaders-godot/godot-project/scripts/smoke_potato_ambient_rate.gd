@@ -3,7 +3,6 @@ extends SceneTree
 # SENTIENCE_THE_LOOM_THAT_THINKS #9 — potato bed timebase matches play rate.
 
 
-const PotatoAmbientBed = preload("res://scripts/potato_ambient_bed.gd")
 
 
 func _initialize() -> void:

@@ -6,7 +6,6 @@ extends SceneTree
 const MindCycle = preload("res://scripts/mind_cycle.gd")
 const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
 const FishProtoself = preload("res://scripts/fish_protoself.gd")
-const FishHomeostasis = preload("res://scripts/fish_homeostasis.gd")
 
 
 class FakeChem:
