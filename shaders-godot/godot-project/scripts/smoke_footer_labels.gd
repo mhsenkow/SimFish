@@ -37,8 +37,10 @@ func _initialize() -> void:
 		var long_label: String = UiIconsScript.feed_button_label(id, false)
 		t.check(long_label.contains(word),
 			"the long label for '%s' carries the word (got '%s')" % [id, long_label])
-		t.equals(UiIconsScript.feed_button_label(id, true), code,
-			"the short label for '%s' is the code" % id)
+		# v0.2.48 ("labeled HUD") made the word win even in compact layouts:
+		# a code is never what a primary verb reads as, at any width.
+		t.equals(UiIconsScript.feed_button_label(id, true), word,
+			"the compact label for '%s' is still the word" % id)
 		t.check(UiIconsScript.feed_tooltip(id).length() > 12,
 			"'%s' explains what the food does" % id)
 
@@ -49,8 +51,8 @@ func _initialize() -> void:
 		t.check(UiIconsScript.care_button_label(id, false)
 				.contains(String(entry["name"])),
 			"the long care label for '%s' carries the word" % id)
-		t.equals(UiIconsScript.care_button_label(id, true), String(entry["text"]),
-			"the short care label for '%s' is the code" % id)
+		t.equals(UiIconsScript.care_button_label(id, true), String(entry["name"]),
+			"the compact care label for '%s' is still the word" % id)
 
 	# --- Compact is a response to width, not a constant ---
 	# This is the regression: both call sites passed `true` unconditionally, so
@@ -73,12 +75,13 @@ func _initialize() -> void:
 		"every feed AND care button site asks, not just one — found %d"
 			% src.count("_footer_labels_compact()"))
 
-	# --- The short form still exists and still fits ---
-	# Compact is a real mode, not a thing to delete: two letters is what a
-	# 640px footer has room for.
+	# --- The words still fit a narrow footer ---
+	# Since v0.2.48 compact keeps the word, so the words themselves must stay
+	# short enough for a 640px footer (one word, no emoji prefix).
 	for id in UiIconsScript.FEED_SUBTYPE_KEYS:
-		t.check(UiIconsScript.feed_button_label(id, true).length() <= 4,
-			"the compact label for '%s' stays short" % id)
+		var label: String = UiIconsScript.feed_button_label(id, true)
+		t.check(label.length() <= 8 and not label.contains(" "),
+			"the compact label for '%s' stays one short word (got '%s')" % [id, label])
 
 	quit(t.finish())
 

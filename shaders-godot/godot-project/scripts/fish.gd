@@ -625,7 +625,9 @@ var _chem_o2_penalty: float = 0.0
 # Felt-body oxygen channels (SENTIENCE_THE_LOOM #178). Breath hunger is the
 # effective-O₂ deficit vs the species set-point; gill burn is NH₃/nitrite sting.
 # Both are written by FishProtoself.tick and read by felt vocabulary / tells.
+@warning_ignore("unused_private_class_variable")
 var _breath_hunger: float = 0.0
+@warning_ignore("unused_private_class_variable")
 var _gill_burn: float = 0.0
 # Staggered maturation / senescence (#39): a small per-individual lifespan
 # offset so siblings born in the same clutch don't all mature and die on the

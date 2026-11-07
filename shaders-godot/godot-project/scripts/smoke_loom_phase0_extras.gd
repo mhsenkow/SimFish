@@ -12,6 +12,7 @@ class FakeSim:
 	extends Node
 	var day_phase: float = 0.5
 	var fish: Array = []
+	@warning_ignore("unused_private_class_variable")
 	var _tank_mind: Variant = null
 	var _night_runtime: Dictionary = {}
 	var _day: int = 0

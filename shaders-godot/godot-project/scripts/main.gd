@@ -12182,15 +12182,15 @@ func _ensure_photo_strip() -> void:
 	row.add_theme_constant_override("separation", 8)
 	box.add_child(row)
 	var shutter := PanelTheme.make_primary_button("Shutter")
-	shutter.tooltip_text = "Save this frame"
+	shutter.tooltip_text = tr("Save this frame")
 	shutter.pressed.connect(_photo_shutter)
 	row.add_child(shutter)
 	var hide_btn := PanelTheme.make_secondary_button("Hide")
-	hide_btn.tooltip_text = "Hide these controls"
+	hide_btn.tooltip_text = tr("Hide these controls")
 	hide_btn.pressed.connect(func() -> void: _set_photo_chrome(false))
 	row.add_child(hide_btn)
 	var done := PanelTheme.make_secondary_button("Done")
-	done.tooltip_text = "Leave photo mode"
+	done.tooltip_text = tr("Leave photo mode")
 	done.pressed.connect(_exit_photo_mode)
 	row.add_child(done)
 	_photo_reveal = Button.new()
@@ -12198,7 +12198,7 @@ func _ensure_photo_strip() -> void:
 	_photo_reveal.visible = false
 	_photo_reveal.focus_mode = Control.FOCUS_NONE
 	_photo_reveal.z_index = 80
-	_photo_reveal.tooltip_text = "Show photo controls"
+	_photo_reveal.tooltip_text = tr("Show photo controls")
 	PanelTheme.style_hud_toggle_button(_photo_reveal)
 	UiIcons.apply_rail_button(_photo_reveal, "photo", true)
 	_photo_reveal.pressed.connect(func() -> void: _set_photo_chrome(true))
@@ -12253,7 +12253,7 @@ func _sync_day_clock() -> void:
 			_follow_thought_strip.visible = false
 		if _onboarding != null:
 			var nudge: Variant = _onboarding.get("_nudge_panel")
-			if nudge is Control and is_instance_valid(nudge):
+			if is_instance_valid(nudge) and nudge is Control:
 				(nudge as Control).visible = false
 
 
