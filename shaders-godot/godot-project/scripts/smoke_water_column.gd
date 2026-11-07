@@ -129,9 +129,12 @@ func _initialize() -> void:
 	# ---- Every in-tank surface applies it ------------------------------------
 	# If one shader misses it, that surface floats free of the depth cue and the
 	# illusion breaks — the substrate staying bright is the obvious tell.
-	for sh in ["voxel", "voxel_mm", "voxel_fauna_mm", "foliage", "foliage_mm",
-			"substrate_opaque", "substrate_caustic"]:
-		var src: String = FileAccess.get_file_as_string("res://shaders/%s.gdshader" % sh)
+	# The fauna MultiMesh shaders keep their fragment in
+	# fauna_mm_common.gdshaderinc (v0.2.52 GPU skinning), so includes are
+	# followed rather than reading only the front file.
+	for sh in ["voxel", "voxel_mm", "voxel_fauna_mm", "voxel_fauna_skinned",
+			"foliage", "foliage_mm", "substrate_opaque", "substrate_caustic"]:
+		var src: String = _with_includes("res://shaders/%s.gdshader" % sh, {})
 		# _ws is the world-space entry point (in-water view path); either counts.
 		TestSupport.check(failed,
 			src.contains("apply_water_column(") or src.contains("apply_water_column_ws("),
@@ -151,3 +154,21 @@ func _initialize() -> void:
 
 func _transmit(k: float, depth: float, view: float, strength: float) -> float:
 	return exp(-k * (depth + view * 0.35) * strength)
+
+
+# Shader source with every `#include "res://..."` inlined, recursively.
+func _with_includes(path: String, seen: Dictionary) -> String:
+	if seen.has(path):
+		return ""
+	seen[path] = true
+	var out := PackedStringArray()
+	for line in FileAccess.get_file_as_string(path).split("\n"):
+		var stripped: String = line.strip_edges()
+		if stripped.begins_with("#include"):
+			var q0: int = stripped.find('"')
+			var q1: int = stripped.rfind('"')
+			if q0 >= 0 and q1 > q0:
+				out.append(_with_includes(stripped.substr(q0 + 1, q1 - q0 - 1), seen))
+				continue
+		out.append(line)
+	return "\n".join(out)

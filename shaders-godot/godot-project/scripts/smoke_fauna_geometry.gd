@@ -20,9 +20,18 @@ func _initialize() -> void:
 					"%s receives the fin-flutter shader weight" % parent.name)
 			if parent == fish.get("_tail_pivot"):
 				tail_boxes.append(box)
-			if parent == fish.get("_head_pivot") and is_equal_approx(h.local_pos.z, -2.38 * fish.adult_voxel_scale):
+			# Each eye has its own pivot under the head (#297) so gaze can turn
+			# the pupil without yawing the skull. The pupil sits at the pivot's
+			# origin; the catchlight rides the same pivot, offset.
+			if (parent == fish.get("_eye_left_pivot") or parent == fish.get("_eye_right_pivot")) \
+					and h.local_pos.is_zero_approx():
 				eyes += 1
-				t.check(absf(h.local_pos.x) + box.size.x * 0.5 > fish.adult_voxel_scale * 0.475,
+				var eye_pivot: Node3D = parent
+				t.check(eye_pivot.get_parent() == fish.get("_head_pivot"),
+					"the eye pivot hangs off the head")
+				t.approx(eye_pivot.position.z, -2.38 * fish.adult_voxel_scale,
+					"the pupil sits at the eye line")
+				t.check(absf(eye_pivot.position.x) + box.size.x * 0.5 > fish.adult_voxel_scale * 0.475,
 					"pupil protrudes from the head surface")
 		t.equals(eyes, 2, "both pupils exist")
 		t.check(_connected(tail_boxes), "tail shape %d has a connected peduncle and fin membrane" % shape)

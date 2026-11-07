@@ -78,12 +78,21 @@ func _initialize() -> void:
 	for handle in fan.get("_cached_meshes"):
 		if handle.batch.mmi.get_parent() == fan.get("_tail_pivot"):
 			fan_handles.append(handle)
-	t.check(fan_handles.size() <= 10, "elaborate fan uses a bounded membrane instead of ray connectors and veil plates")
+	# Six widening membrane strips, each with one thin central ray on the same
+	# centre (v0.2.50), plus the peduncle, its base cap, and at most one healed
+	# nick (a random roll, so the bound has to allow it: 6 + 6 + 2 + 1).
+	t.check(fan_handles.size() <= 15, "elaborate fan uses a bounded membrane instead of ray connectors and veil plates")
 	var membrane_strips: int = 0
+	var central_rays: int = 0
 	for handle in fan_handles:
 		if handle.local_pos.z > fan.adult_voxel_scale * 0.5 and is_zero_approx(handle.local_pos.y):
-			membrane_strips += 1
+			var height: float = handle.transform.basis.y.length()
+			if height > fan.adult_voxel_scale * 0.3:
+				membrane_strips += 1
+			else:
+				central_rays += 1
 	t.equals(membrane_strips, 6, "fan keeps six continuous widening membrane strips")
+	t.equals(central_rays, 6, "each fan strip carries one central ray, not a mesh of tiny lines")
 	fan.free()
 	fish.free()
 	egg.free()

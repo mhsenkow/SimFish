@@ -196,7 +196,7 @@ func _auto_subject() -> Node3D:
 	var scene: Node = get_tree().current_scene if is_inside_tree() else null
 	if scene != null:
 		var followed: Variant = scene.get("_follow_target")
-		if followed is Node3D and is_instance_valid(followed):
+		if is_instance_valid(followed) and followed is Node3D:
 			return followed as Node3D
 	if sim == null:
 		return null
@@ -299,7 +299,7 @@ static func creature_yaw(c: Node3D) -> float:
 
 static func _pivot(c: Node, field: String) -> Node3D:
 	var p: Variant = c.get(field)
-	return p as Node3D if p is Node3D and is_instance_valid(p) else null
+	return p as Node3D if is_instance_valid(p) and p is Node3D else null
 
 
 # Union AABB of every visual under pivot, in the pivot's own space. Empty

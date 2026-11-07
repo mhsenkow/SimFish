@@ -104,7 +104,9 @@ func _run_all() -> bool:
 		return _fail("the picture must scale with the screen, not a fixed frame")
 	if not project_text.contains("window/size/mode=3"):
 		return _fail("the window must open fullscreen")
-	if not project_text.contains('window/stretch/scale_mode="fractional"'):
+	# "fractional" is Godot's default, and the editor drops default values
+	# from project.godot when it re-saves (v0.2.50 did), so ask the setting.
+	if String(ProjectSettings.get_setting("display/window/stretch/scale_mode", "")) != "fractional":
 		return _fail("integer window scale leaves black bars")
 	if not FileAccess.get_file_as_string("res://scripts/main.gd").contains("STRETCH_SCALE"):
 		return _fail("tank display must scale to the full window")
