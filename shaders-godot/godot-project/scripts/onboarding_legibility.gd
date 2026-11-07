@@ -136,15 +136,15 @@ static func cheat_sheet_lines(mobile: bool, gamepad: bool = false) -> PackedStri
 			"❓ rail — Help & glossary",
 		])
 	return PackedStringArray([
+		"Drag — orbit · Shift/Space+drag or middle-drag — pan · Right-drag — dolly",
+		"Scroll / trackpad two-finger — zoom · horizontal two-finger — yaw · pinch — zoom",
+		"Shift/Space + two-finger — pan · WASD — pan · Q/E — down/up · arrows — orbit",
+		"Alt+←/→ — cycle follow · C — portal · Esc — release · F — reset · G — auto-orbit",
 		"O — Settings · R — Rendering · M — Sound · Shift+M — Motion debug",
 		"B — Aquascape · [ / ] — brush size · Backspace — undo",
-		"C — Follow portal · ←/→ — cycle follow · Esc — release",
-		"H — Focus mode · P — Pause · T — Timelapse · F — reset camera",
-		"1–8 — Sim speed · F12 — Photo",
-		"Click water — feed · 9 / 0 — food type",
+		"H — Focus mode · P — Pause · T — Timelapse · 1–8 — Sim speed · F12 — Photo",
+		"Click water — feed · 9 / 0 — food type · Shift+click — tap glass (startle)",
 		"Footer Care — Water change · Filter rinse",
-		"Shift+click water — tap glass (startle)",
-		"Right-drag — dolly · Space+drag — pan · G — auto-orbit",
 		"Click stat chips — history / water / mood / alerts",
 		"? / Shift+/ — this help · K — Residents",
 		"Right rail — Create · World · Look · System · Alerts · ❓ Help",
@@ -158,7 +158,7 @@ static func control_hint_for_context(ctx: String) -> String:
 		"aquascape_pad":
 			return "LS aim · Cross place · L1/R1 tools · ○/△ exit"
 		"follow":
-			return "← / → cycle subjects · Esc release · C portal"
+			return "Alt+←/→ cycle subjects · Esc release · C portal"
 		"immersive":
 			return "Tap edge for controls · H exit focus"
 		"mobile":
@@ -166,7 +166,7 @@ static func control_hint_for_context(ctx: String) -> String:
 		"gamepad":
 			return "RS look · LS pan · Cross feed · Square follow · Create help"
 		_:
-			return "Drag look · tap water feed · tap chips for details · ? help"
+			return "Drag look · WASD pan · arrows orbit · scroll zoom · ? help"
 
 
 static func mood_driver(stats: Dictionary, mood_score: float) -> String:

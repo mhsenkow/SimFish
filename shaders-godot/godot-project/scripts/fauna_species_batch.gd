@@ -59,6 +59,8 @@ class SkinPalette extends RefCounted:
 			free_slots.append(slot)
 
 	func write(slot: int, t: Transform3D) -> void:
+		if not t.is_finite():
+			t = Transform3D.IDENTITY
 		var i: int = slot * SLOT_FLOATS
 		var b: Basis = t.basis
 		var o: Vector3 = t.origin
@@ -274,16 +276,30 @@ static func sync_all() -> void:
 			continue
 		var root_id: int = group.batch_root.get_instance_id()
 		if not _inverse_cache.has(root_id):
-			_inverse_cache[root_id] = group.batch_root.global_transform.affine_inverse()
+			var root_g: Transform3D = group.batch_root.global_transform
+			if not root_g.is_finite() or absf(root_g.basis.determinant()) < 1e-8:
+				bounds_fallback[group.batch] = true
+				continue
+			_inverse_cache[root_id] = root_g.affine_inverse()
 		var root_inv: Transform3D = _inverse_cache[root_id] as Transform3D
 		var pivot_global: Transform3D = group.pivot.global_transform
+		if not pivot_global.is_finite() or not root_inv.is_finite():
+			# Keep last good bone / voxel transforms; don't push NaN into the
+			# MultiMesh buffer or the GPU bone palette.
+			bounds_fallback[group.batch] = true
+			continue
 		var bone_transform: Transform3D = root_inv * pivot_global
+		if not bone_transform.is_finite():
+			bounds_fallback[group.batch] = true
+			continue
 		var batch: VoxelBatch = null
 		if group.skin != null:
 			# One palette row per bone per frame. The shader composes
 			# (pivot_global * root_inv) * (root_global * local), which is the
 			# exact world transform the legacy path wrote per voxel.
-			group.skin.write(group.bone_slot, pivot_global * root_inv)
+			var skin_xform: Transform3D = pivot_global * root_inv
+			if skin_xform.is_finite():
+				group.skin.write(group.bone_slot, skin_xform)
 			batch = group.batch
 			if batch == null or not is_instance_valid(batch.mmi):
 				continue
@@ -293,7 +309,9 @@ static func sync_all() -> void:
 				var handle: VoxelBatch.Handle = group.handles[i]
 				if not handle.alive or handle.batch == null or not is_instance_valid(handle.batch.mmi):
 					continue
-				handle.set_transform(bone_transform * group.locals[i])
+				var composed: Transform3D = bone_transform * group.locals[i]
+				if composed.is_finite():
+					handle.set_transform(composed)
 				group.handles[retained] = handle
 				group.locals[retained] = group.locals[i]
 				retained += 1

@@ -282,7 +282,12 @@ static func apply_soft_chains_flow(f: Fish, flow: Vector3) -> void:
 	# #251: bias chain roots downstream.
 	if not enabled or f._soft_chains.is_empty() or flow.length_squared() < 0.01:
 		return
-	var local: Vector3 = f.global_transform.basis.inverse() * flow
+	var basis: Basis = f.global_transform.basis
+	if not basis.is_finite() or absf(basis.determinant()) < 1e-8:
+		return
+	var local: Vector3 = basis.inverse() * flow
+	if not local.is_finite():
+		return
 	var yaw_bias: float = clampf(atan2(-local.x, maxf(-local.z, 0.05)), -0.35, 0.35)
 	for entry in f._soft_chains:
 		var pivots: Array = entry["pivots"]
@@ -391,7 +396,12 @@ static func apply_feeler_probe(f: Fish, dt: float, neighbors: Array = []) -> voi
 			aim = d
 	if aim.length_squared() < 0.04:
 		return
-	var local: Vector3 = f.global_transform.basis.inverse() * aim.normalized()
+	var basis: Basis = f.global_transform.basis
+	if not basis.is_finite() or absf(basis.determinant()) < 1e-8:
+		return
+	var local: Vector3 = basis.inverse() * aim.normalized()
+	if not local.is_finite():
+		return
 	var yaw: float = clampf(atan2(-local.x, maxf(-local.z, 0.05)), -0.55, 0.55)
 	var pitch: float = clampf(atan2(local.y, 1.0), -0.4, 0.35)
 	for entry in f._soft_chains:

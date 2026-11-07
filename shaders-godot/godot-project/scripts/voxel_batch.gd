@@ -115,7 +115,11 @@ func _init(parent: Node3D, material: Material, initial_capacity: int = 64,
 	if _use_custom:
 		_mm.use_custom_data = true
 	_mm.instance_count = maxi(1, initial_capacity)
+	# Godot leaves new MultiMesh slots uninitialized (NaN/garbage). Hide them
+	# before the MMI is in the tree so the renderer / editor never samples
+	# "instance_set_transform: !v.is_finite()" from spare capacity.
 	_mm.visible_instance_count = 0
+	_zero_instance_range(0, _mm.instance_count)
 	_mm.mesh = VoxelMat.get_box(UNIT_BOX)
 	mmi = MultiMeshInstance3D.new()
 	mmi.multimesh = _mm
@@ -281,9 +285,12 @@ func _compact_live_handles(live_count: int) -> void:
 	while new_capacity < maxi(1, live_count):
 		new_capacity *= 2
 	new_mm.instance_count = new_capacity
+	# Default visible_instance_count is -1 (draw every slot). Zero and hide
+	# BEFORE swapping onto the live MMI, otherwise one frame of garbage
+	# capacity floods renderer_scene_cull with !v.is_finite() errors.
+	new_mm.visible_instance_count = 0
 	new_mm.mesh = _mm.mesh
 	_mm = new_mm
-	mmi.multimesh = _mm
 	_xforms = new_xforms
 	_colors = new_colors
 	_customs = new_customs
@@ -293,9 +300,11 @@ func _compact_live_handles(live_count: int) -> void:
 		_handles.append(weakref(h))
 	_count = live_count
 	_visible = live_count
+	_zero_instance_range(0, _mm.instance_count)
 	for i in _count:
 		_write_instance(i)
 	_mm.visible_instance_count = _visible
+	mmi.multimesh = _mm
 	_bounds_dirty = true
 	_refresh_custom_aabb()
 
@@ -404,9 +413,13 @@ func blit_buffer() -> void:
 func _ensure_capacity(n: int, first_unwritten: int = -1) -> void:
 	if n <= _mm.instance_count:
 		return
-	var new_cap: int = maxi(64, _mm.instance_count * 2)
+	var old_cap: int = _mm.instance_count
+	var new_cap: int = maxi(64, old_cap * 2)
 	while new_cap < n:
 		new_cap *= 2
+	# Hide before grow so a mid-resize render cannot sample uninitialized slots.
+	var prev_visible: int = _mm.visible_instance_count
+	_mm.visible_instance_count = 0
 	_mm.instance_count = new_cap
 	# Re-apply from the mirror — resizing may have dropped existing instances.
 	var rewrite_count: int = first_unwritten if first_unwritten >= 0 else _count
@@ -419,8 +432,21 @@ func _ensure_capacity(n: int, first_unwritten: int = -1) -> void:
 		_mm.set_instance_color(i, _colors[i])
 		if _use_custom and i < _customs.size():
 			_mm.set_instance_custom_data(i, _customs[i])
+	_zero_instance_range(rewrite_count, new_cap)
 	_visible = mini(_visible, _count)
-	_mm.visible_instance_count = _visible
+	_mm.visible_instance_count = mini(prev_visible, _visible) if prev_visible >= 0 else _visible
+
+
+func _zero_instance_range(from_i: int, to_i: int) -> void:
+	if _mm == null:
+		return
+	var hidden := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	var blank := Color(0.0, 0.0, 0.0, 1.0)
+	for i in range(maxi(0, from_i), mini(to_i, _mm.instance_count)):
+		_mm.set_instance_transform(i, hidden)
+		_mm.set_instance_color(i, blank)
+		if _use_custom:
+			_mm.set_instance_custom_data(i, blank)
 
 
 func _apply_color(i: int, c: Color) -> void:

@@ -46,10 +46,37 @@ func _ready() -> void:
 	_refresh()
 	call_deferred("_maybe_first_launch_flow")
 	call_deferred("_fade_in_menu")
+	call_deferred("_maybe_review_demo_autostart")
 	var glm := get_node_or_null("/root/GuardianLlm")
 	if glm != null and glm.has_signal("consent_required"):
 		glm.consent_required.connect(_on_guardian_consent_required)
 	_setup_gamepad_menu()
+
+
+## App Review / simulator capture: drop `user://review_demo.flag` (or set
+## env `WALSTAD_REVIEW_DEMO=1`) to jump straight into a Quiet Garden living
+## tank so a recording can show real gameplay without UI automation.
+func _maybe_review_demo_autostart() -> void:
+	var want := OS.get_environment("WALSTAD_REVIEW_DEMO") == "1" \
+			or FileAccess.file_exists("user://review_demo.flag")
+	if not want:
+		return
+	var prefs := ConfigFile.new()
+	prefs.load("user://global_prefs.cfg")
+	prefs.set_value("app", "first_launch_done", true)
+	prefs.set_value("app", "walkthrough_offer_seen", true)
+	prefs.save("user://global_prefs.cfg")
+	# Let the menu finish fading in before we transition.
+	await get_tree().create_timer(1.2).timeout
+	if not is_inside_tree():
+		return
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves != null:
+		var listed: Array = saves.list_tanks()
+		if not listed.is_empty():
+			_open_slot(int(listed[0].get("slot", 1)))
+			return
+	_on_living_tank_pressed()
 
 
 func _setup_chrome() -> void:

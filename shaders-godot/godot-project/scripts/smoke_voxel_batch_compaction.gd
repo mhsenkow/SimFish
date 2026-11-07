@@ -31,6 +31,12 @@ func _initialize() -> void:
 	TestSupport.check(failed, batch.consider_compaction(0.2), "sustained sparse buffer compacts")
 	TestSupport.check(failed, batch._mm.instance_count == VoxelBatch.MIN_CAPACITY,
 		"capacity shrinks to bounded floor")
+	TestSupport.check(failed, batch._mm.visible_instance_count == batch._count,
+		"compaction commits visible count (never leaves -1 over garbage slots)")
+	for i in batch._mm.instance_count:
+		var xf: Transform3D = batch._mm.get_instance_transform(i)
+		TestSupport.check(failed, xf.is_finite(),
+			"compaction leaves every capacity slot finite (incl. spare)")
 
 	var expected_index: int = 0
 	for h in survivors + [deferred]:

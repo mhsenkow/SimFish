@@ -99,15 +99,15 @@ watching → trust → long-run). One idea at a time.
 - [ ] **50. Feed key vs digit confusion.** Food subtype 9/0 need labels on the dock, not only keyhints.
 - [ ] **51. Accidental UI clicks.** Click-through protection: UI swallows clicks that would feed/startle.
 - [ ] **52. Drag threshold.** Tiny mouse jitter while holding shouldn't orbit; raise slop to match mobile.
-- [ ] **53. Pinch-to-zoom desktop trackpad.** Explicit support + legend entry for Mac trackpad pinch.
+- [x] **53. Pinch-to-zoom desktop trackpad.** Explicit support + legend entry for Mac trackpad pinch.
 - [ ] **54. Space to pause clarity.** Pause freezes sim *and* shows a quiet PAUSED word — never ambiguous stillness.
 - [ ] **55. Tab order.** Keyboard-only users can reach Feed, Care, Residents, Settings in a sane order.
 - [ ] **56. Focus ring contrast.** Keyboard focus rings survive palette quantize (light edge + dark edge).
 - [ ] **57. Tooltips with verbs.** Hover FeedDock: "Drop food where you click in the water."
 - [ ] **58. Disabled control honesty.** Greyed actions say why ("tank at plant capacity").
 - [ ] **59. Chord conflict audit.** No binding fights Steam overlay / OS screenshots without a note.
-- [ ] **60. Middle-click pan.** Optional pan mode for people who hate orbit.
-- [ ] **61. Reset camera.** One key returns to default comfortable framing.
+- [x] **60. Middle-click pan.** Optional pan mode for people who hate orbit.
+- [x] **61. Reset camera.** One key returns to default comfortable framing.
 - [ ] **62. Follow next/prev.** Cycle favorites with `[` `]` — desk watchers need it.
 - [ ] **63. Locked cursor modes.** Optional mouselook for immersion freaks; default stays casual.
 - [ ] **64. Gesture cheat sheet art.** One static image in Help: finger/mouse diagrams, not a paragraph.
@@ -460,7 +460,7 @@ watching → trust → long-run). One idea at a time.
 - [ ] **371. Multi-monitor.** Prefer start on the monitor the window is on.
 - [ ] **372. Ultrawide safe.** HUD margins for 21:9 / 32:9.
 - [ ] **373. Portrait mobile.** Tank letterboxes gracefully; docks reflow.
-- [ ] **374. Zoom to cursor.** Zoom toward pointer, not frame center only.
+- [x] **374. Zoom to cursor.** Zoom toward pointer, not frame center only.
 - [ ] **375. Follow smoothing.** Less motion sickness; more documentary.
 - [ ] **376. Cutaway moment.** Rare: camera finds a wonder without stealing control (#993 law from plants — same spirit).
 - [ ] **377. Manual framing guides.** Photo thirds / golden optional.
@@ -484,7 +484,7 @@ watching → trust → long-run). One idea at a time.
 - [ ] **395. Spectator UI.** Watch-only profile: hide edit tools.
 - [ ] **396. Desk aspect.** Remembers window size per machine.
 - [ ] **397. Snap to front glass.** One key squares the view for classic aquascape look.
-- [ ] **398. Zoom limits honest.** Soft bump at limits, not hard wall.
+- [x] **398. Zoom limits honest.** Soft bump at limits, not hard wall.
 - [ ] **399. Camera debug off in release.** No accidental free-cam cheats exposed.
 - [ ] **400. Camera smoke.** Assert bookmarks save/load; follow release on target free.
 

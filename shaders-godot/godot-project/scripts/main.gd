@@ -529,7 +529,7 @@ func _zoom_from_scroll_event(mb: InputEventMouseButton) -> void:
 # Two-finger trackpad scroll. `delta` is in scroll units, positive-down for y
 # and positive-right for x on macOS.
 func _handle_pan_gesture(pg: InputEventPanGesture) -> void:
-	var d: Vector2 = pg.delta
+	var d: Vector2 = CameraController.pan_gesture_axes(pg.delta)
 	if d.length_squared() < 0.000001:
 		return
 	if _mouse_over_porthole():
@@ -537,7 +537,7 @@ func _handle_pan_gesture(pg: InputEventPanGesture) -> void:
 			_adjust_portal_zoom(1.0 - clampf(d.y, -0.4, 0.4) * 0.12)
 		return
 	if Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_SPACE):
-		# Shift + two fingers slides the tank, matching Shift + drag.
+		# Shift/Space + two fingers slides the tank, matching Shift/Space + drag.
 		_pan_camera_by_pixels(d * TRACKPAD_PAN_PIXELS)
 		return
 	# Vertical → zoom. Fingers up (delta.y negative on macOS) pushes in, the
@@ -549,6 +549,7 @@ func _handle_pan_gesture(pg: InputEventPanGesture) -> void:
 	if absf(d.x) > 0.001:
 		yaw += d.x * TRACKPAD_PAN_YAW
 		_cam_spin_yaw = 0.0
+		_abandon_panel_framing()
 		_apply_camera()
 
 
@@ -593,6 +594,16 @@ func _drain_zoom(dt: float) -> void:
 	if absf(_zoom_budget) < 0.0005:
 		_zoom_budget = 0.0
 	if absf(applied) < 0.000001:
+		return
+	# Soft bump at orbit/ortho limits so wheel/trackpad don't feel bricked.
+	if _current_projection_id == "perspective":
+		applied = CameraController.soften_log_zoom_at_limit(radius, applied)
+	elif camera != null:
+		applied = CameraController.soften_log_zoom_at_limit(
+				camera.size, applied,
+				CameraController.ORTHO_MIN_SIZE, CameraController.ORTHO_MAX_SIZE)
+	if absf(applied) < 0.000001:
+		_zoom_budget = 0.0
 		return
 	var before: Vector3 = _zoom_anchor_world()
 	_zoom_camera_by_factor(exp(applied), false)
@@ -1404,7 +1415,6 @@ var _drag_committed: bool = false
 # Touch sensitivity (slightly higher than mouse because fingers are less precise).
 const TOUCH_ORBIT_SENSITIVITY: float = 0.004
 const TOUCH_PAN_SENSITIVITY: float = 0.015
-const PINCH_ZOOM_SENSITIVITY: float = 0.008
 # Flag: true while any finger is touching the screen. Used to suppress
 # mouse-polling so emulated mouse events from touch don't double-fire.
 var _touch_active: bool = false
@@ -2459,7 +2469,7 @@ func _process(dt: float) -> void:
 
 	_sync_rail_toggles()
 
-	# WASD pan target along view direction (desktop only — no keyboard on mobile).
+	# WASD pan + arrow orbit (desktop only — no keyboard on mobile).
 	# Gamepad left stick pans when not in aquascape (aquascape uses LS for reticle).
 	if not _is_touch_active() and not _typing_focus_in_ui() and not _intro_dialog_active():
 		var fwd: Vector3 = (target - camera.global_position)
@@ -2473,13 +2483,17 @@ func _process(dt: float) -> void:
 			if Input.is_key_pressed(KEY_S): target -= fwd * step; moved = true
 			if Input.is_key_pressed(KEY_D): target += right * step; moved = true
 			if Input.is_key_pressed(KEY_A): target -= right * step; moved = true
-			if Input.is_key_pressed(KEY_E): target.y += step; moved = true
-			if Input.is_key_pressed(KEY_Q): target.y -= step; moved = true
+			# Q/E vertical pan yields to aquascape hardscape rotate while building.
+			if not _aquascape.is_active:
+				if Input.is_key_pressed(KEY_E): target.y += step; moved = true
+				if Input.is_key_pressed(KEY_Q): target.y -= step; moved = true
 			if Input.is_key_pressed(KEY_F):
 				_reset_camera_to_default()
 				moved = false  # _reset_camera_to_default already called _apply_camera
 			if moved:
 				_apply_camera()
+		# Arrow keys orbit (Alt+←/→ cycles follow; aquascape selection uses arrows to nudge).
+		_process_keyboard_orbit(dt)
 		_process_gamepad_camera(dt)
 
 	# Timelapse + dance capture (needs dt from _process).
@@ -2726,7 +2740,8 @@ func _process_mouse_input(dt: float) -> void:
 			_handle_shortcut(KEY_ESCAPE, _close_chip_popups)
 		else:
 			_handle_shortcut(KEY_ESCAPE, _clear_follow)
-		if _aquascape.is_active and _aquascape.has_selection():
+		if _aquascape.is_active and _aquascape.has_selection() \
+				and not Input.is_key_pressed(KEY_ALT):
 			var step: float = TerrainVoxelGrid.CELL_SIZE
 			if Input.is_key_pressed(KEY_SHIFT):
 				step *= 4.0
@@ -2734,9 +2749,8 @@ func _process_mouse_input(dt: float) -> void:
 			_handle_shortcut(KEY_DOWN, func(): _aquascape.nudge_selection(Vector3(0, 0, step)))
 			_handle_shortcut(KEY_LEFT, func(): _aquascape.nudge_selection(Vector3(-step, 0, 0)))
 			_handle_shortcut(KEY_RIGHT, func(): _aquascape.nudge_selection(Vector3(step, 0, 0)))
-		else:
-			_handle_shortcut(KEY_LEFT, func(): cycle_follow(-1))
-			_handle_shortcut(KEY_RIGHT, func(): cycle_follow(1))
+		# Alt+←/→ cycles follow; bare arrows orbit via _process_keyboard_orbit.
+		_handle_alt_arrow_follow()
 		_handle_shortcut(KEY_C, _toggle_portal)
 		_handle_shortcut(KEY_K, _toggle_residents_panel)
 		_handle_shortcut(KEY_APOSTROPHE, follow_primary_favorite)
@@ -3297,6 +3311,47 @@ func _handle_shortcut(key: int, action: Callable) -> void:
 	if pressed and not was:
 		action.call()
 	_key_was_pressed[key] = pressed
+
+
+# Alt+← / Alt+→ cycle the follow target (bare arrows orbit the camera).
+func _handle_alt_arrow_follow() -> void:
+	var alt: bool = Input.is_key_pressed(KEY_ALT)
+	var left_down: bool = alt and Input.is_key_pressed(KEY_LEFT)
+	var right_down: bool = alt and Input.is_key_pressed(KEY_RIGHT)
+	if left_down and not bool(_key_was_pressed.get("alt_follow_left", false)):
+		cycle_follow(-1)
+	if right_down and not bool(_key_was_pressed.get("alt_follow_right", false)):
+		cycle_follow(1)
+	_key_was_pressed["alt_follow_left"] = left_down
+	_key_was_pressed["alt_follow_right"] = right_down
+
+
+# Continuous arrow-key orbit. Shares CameraController.orbit with mouse drag.
+func _process_keyboard_orbit(dt: float) -> void:
+	if camera == null:
+		return
+	if Input.is_key_pressed(KEY_ALT):
+		return
+	if _aquascape.is_active and _aquascape.has_selection():
+		return
+	var kbd: Vector2 = CameraController.keyboard_orbit_pixels(
+			Input.is_key_pressed(KEY_LEFT),
+			Input.is_key_pressed(KEY_RIGHT),
+			Input.is_key_pressed(KEY_UP),
+			Input.is_key_pressed(KEY_DOWN),
+			dt, _vessel_speed_scale)
+	if kbd.length_squared() < 0.000001:
+		return
+	var ob: Vector2 = CameraController.orbit(yaw, pitch, kbd, _orbit_sens())
+	yaw = ob.x
+	pitch = ob.y
+	_abandon_panel_framing()
+	_release_cinematic_follow()
+	# Light coast so releasing an arrow doesn't hard-stop.
+	if dt > 0.0:
+		_cam_spin_yaw = (-kbd.x * _orbit_sens()) / dt * _CAM_SPIN_GAIN * 0.35
+		_cam_spin_pitch = (-kbd.y * _orbit_sens()) / dt * _CAM_SPIN_GAIN * 0.35
+	_apply_camera()
 
 
 func _typing_focus_in_ui() -> bool:
@@ -13269,12 +13324,14 @@ func _show_tutorial_now() -> void:
 		]
 	else:
 		hints = [
-			"• Drag to orbit the tank",
-			"• Pick food in the footer, then tap water to feed",
-			"• Tap a creature to follow it",
-			"• Stat chips at top — tap for water & history",
+			"• Drag to orbit · Shift/Space-drag or middle-drag to pan",
+			"• Scroll or two-finger trackpad to zoom · pinch also zooms",
+			"• WASD pans · arrow keys orbit · Alt+←/→ cycles follow · F resets",
+			"• Pick food in the footer, then click water to feed",
+			"• Click a creature to follow it · G for auto-orbit",
+			"• Stat chips at top — click for water & history",
 			"• Right rail — Create · World · Look · System · Alerts",
-			"• Press ? for keyboard shortcuts",
+			"• Press ? for the full controls list",
 		]
 	for h in hints:
 		var lab := Label.new()

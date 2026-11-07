@@ -3259,7 +3259,10 @@ func rebuild_substrate_mesh() -> void:
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.mesh = box_mesh
 		mm.instance_count = visible_positions.size()
-		mm.visible_instance_count = visible_positions.size()
+		# Hide until every slot is written — default visible=-1 would draw
+		# uninitialized (often non-finite) capacity for one frame.
+		mm.visible_instance_count = 0
+		var written: int = 0
 		for i in visible_positions.size():
 			var t := Transform3D()
 			t.origin = visible_positions[i]
@@ -3268,7 +3271,11 @@ func rebuild_substrate_mesh() -> void:
 			if not t.is_finite():
 				push_warning("rebuild_substrate_mesh: non-finite origin at index %d, skipping." % i)
 				continue
-			mm.set_instance_transform(i, t)
+			mm.set_instance_transform(written, t)
+			written += 1
+		if written == 0:
+			continue
+		mm.visible_instance_count = written
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		# Substrate voxels are small; default MultiMesh AABB can frustum-cull rows.

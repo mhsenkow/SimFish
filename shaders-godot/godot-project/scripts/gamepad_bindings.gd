@@ -64,8 +64,9 @@ static func ensure() -> void:
 	_key("settings", KEY_O)
 	_key("photo", KEY_F12)
 	_key("help", KEY_QUESTION)
-	_key("follow_prev", KEY_LEFT)
-	_key("follow_next", KEY_RIGHT)
+	# Bare arrows orbit the camera; Alt+←/→ cycles follow (desktop camera pass).
+	_rebind_key_alt("follow_prev", KEY_LEFT)
+	_rebind_key_alt("follow_next", KEY_RIGHT)
 	_key("camera_reset", KEY_F)
 	_key("brush_down", KEY_BRACKETLEFT)
 	_key("brush_up", KEY_BRACKETRIGHT)
@@ -123,6 +124,26 @@ static func _key(action: String, keycode: int) -> void:
 	ev.keycode = keycode as Key
 	if not _has_event(action, ev):
 		InputMap.action_add_event(action, ev)
+
+
+# Strip any keyboard events for `keycode` on `action`, then bind Alt+keycode.
+# Keeps joypad events. Clears stale bare-arrow follow bindings from older boots.
+static func _rebind_key_alt(action: String, keycode: int) -> void:
+	_ensure_action(action)
+	var kept: Array[InputEvent] = []
+	for existing in InputMap.action_get_events(action):
+		if existing is InputEventKey \
+				and (existing as InputEventKey).keycode == (keycode as Key):
+			continue
+		kept.append(existing)
+	InputMap.action_erase_events(action)
+	for ev in kept:
+		InputMap.action_add_event(action, ev)
+	var alt := InputEventKey.new()
+	alt.keycode = keycode as Key
+	alt.alt_pressed = true
+	if not _has_event(action, alt):
+		InputMap.action_add_event(action, alt)
 
 
 # Built-in ui_* joy events are often device=0 only; DualSense on Mac may be

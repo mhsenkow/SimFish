@@ -30,6 +30,15 @@ Simulation, Casual, Pixel Graphics, Relaxing, Nature, Singleplayer, Indie
 | Linux | `WalstadLoom-linux.x86_64` |
 | macOS | `WalstadLoom.app` |
 
+## v0.2.52 visual refresh
+
+Capsules, library art and screenshots rebuilt from the realism-pass stills
+(`output/polish_after`, `output/light_iter`). Microtrailer at
+`steam/store/assets/trailer/walstad_loom_microtrailer.mp4` (13s, 1920×1080).
+
+Partner store edit id is **1202304** (AppID 4796460). After uploading,
+**Publish** the store page for changes to go live.
+
 ## Generated assets
 
 Run from repo root:

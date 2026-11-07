@@ -279,7 +279,7 @@ func _write_instances() -> void:
 		var m: int = p.morph
 		var idx: int = counters[m]
 		if idx >= _mm[m].instance_count:
-			_mm[m].instance_count = _mm[m].instance_count * 2
+			_grow_morph_capacity(m)
 		if not p.pos.is_finite():
 			continue
 		var s: float = p.scale * presence
@@ -292,6 +292,22 @@ func _write_instances() -> void:
 		counters[m] = idx + 1
 	for m in MORPHS:
 		_mm[m].visible_instance_count = counters[m]
+
+
+func _grow_morph_capacity(m: int) -> void:
+	# Resizing MultiMesh can drop existing instance data and leave new slots
+	# as NaN garbage. Hide, grow, zero the spare capacity, then let the caller
+	# rewrite live instances on this same pass.
+	var mm: MultiMesh = _mm[m]
+	var old_cap: int = mm.instance_count
+	var prev_visible: int = mm.visible_instance_count
+	mm.visible_instance_count = 0
+	mm.instance_count = maxi(old_cap * 2, old_cap + 1)
+	var hidden := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	for i in range(mm.instance_count):
+		mm.set_instance_transform(i, hidden)
+	if prev_visible >= 0:
+		mm.visible_instance_count = mini(prev_visible, old_cap)
 
 
 # Bake a morph's pieces (the same box layout the old Microfauna built) into one

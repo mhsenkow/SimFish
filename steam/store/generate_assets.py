@@ -299,7 +299,7 @@ def main() -> None:
     print(
         f"\nReady: {len(screenshots)} screenshots, {len(capsules)} capsules, {len(icons)} icons"
         f"\n  → {OUT}\n"
-        f"Upload at: https://partner.steamgames.com/admin/game/edit/4796460?activetab=tab_graphicalassets"
+        f"Upload at: https://partner.steamgames.com/admin/game/edit/1202304?activetab=tab_graphicalassets"
     )
 
 

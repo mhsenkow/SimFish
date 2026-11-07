@@ -82,6 +82,47 @@ func _initialize() -> void:
 	TestSupport.check(failed, CameraController.magnify_log_zoom(0.95) > 0.0,
 			"magnify<1 zooms out")
 
+	# Soft zoom limit: full strength mid-shell, eased near the clamp.
+	var mid_soft: float = CameraController.soften_log_zoom_at_limit(20.0, 0.2)
+	TestSupport.check(failed, _approx(mid_soft, 0.2),
+			"soften_log_zoom is identity far from limits")
+	var near_max: float = CameraController.soften_log_zoom_at_limit(
+			CameraController.MAX_RADIUS - 0.5, 0.5)
+	TestSupport.check(failed, near_max < 0.5 and near_max >= 0.0,
+			"soften_log_zoom eases outbound near MAX_RADIUS")
+	var near_min: float = CameraController.soften_log_zoom_at_limit(
+			CameraController.MIN_RADIUS + 0.5, -0.5)
+	TestSupport.check(failed, near_min > -0.5 and near_min <= 0.0,
+			"soften_log_zoom eases inbound near MIN_RADIUS")
+	TestSupport.check(failed,
+			_approx(CameraController.soften_log_zoom_at_limit(
+					CameraController.MIN_RADIUS, -0.3), 0.0),
+			"at MIN_RADIUS further zoom-in softens to zero")
+
+	# Trackpad pan-gesture axis preference.
+	var jitter: Vector2 = CameraController.pan_gesture_axes(Vector2(0.01, 0.01))
+	TestSupport.check(failed, jitter.is_equal_approx(Vector2.ZERO),
+			"pan_gesture_axes drops sub-deadzone jitter")
+	var vert: Vector2 = CameraController.pan_gesture_axes(Vector2(0.04, 0.2))
+	TestSupport.check(failed, _approx(vert.x, 0.0) and vert.y > 0.0,
+			"dominant vertical trackpad flick zeros yaw axis")
+	var horiz: Vector2 = CameraController.pan_gesture_axes(Vector2(0.2, 0.04))
+	TestSupport.check(failed, horiz.x > 0.0 and _approx(horiz.y, 0.0),
+			"dominant horizontal trackpad flick zeros zoom axis")
+
+	# Arrow-key orbit pixels → CameraController.orbit.
+	var kbd_px: Vector2 = CameraController.keyboard_orbit_pixels(
+			false, true, false, false, 1.0 / 60.0, 1.0)
+	TestSupport.check(failed, kbd_px.x > 0.0 and _approx(kbd_px.y, 0.0),
+			"keyboard right yields positive orbit pixel delta")
+	var kbd_ob: Vector2 = CameraController.orbit(0.0, 0.0, kbd_px)
+	TestSupport.check(failed, kbd_ob.x < 0.0,
+			"arrow-right orbit decreases yaw like a rightward mouse drag")
+	TestSupport.check(failed,
+			CameraController.keyboard_orbit_pixels(false, false, false, false, 0.016)
+					.is_equal_approx(Vector2.ZERO),
+			"no arrow keys → zero keyboard orbit delta")
+
 	# The budget must be bounded, drain toward zero, and never outrun the cap.
 	var big: float = CameraController.clamp_zoom_budget(99.0)
 	TestSupport.check(failed, _approx(big, CameraController.ZOOM_BUDGET_MAX),

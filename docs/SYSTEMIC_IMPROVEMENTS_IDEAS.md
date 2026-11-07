@@ -319,9 +319,12 @@ that has drifted from the GDScript truth. Ambiguity is the cost — resolve it.*
   Fresh tank. *S · M*
 - [ ] **82. Narrate the nitrogen cycle as it happens.** NH₃→NO₂→NO₃ is invisible until a chip
   tap (`main.gd` water popup); surface lightweight progress beats during week 1. *M · M*
-- [ ] **83. A canonical, complete controls legend.** The cheat sheet (`main.gd`
+- [~] **83. A canonical, complete controls legend.** The cheat sheet (`main.gd`
   `_toggle_cheat_sheet`) omits real bindings (T=timelapse, 1/2/3=timescale); drive it from
   one `CONTROLS` dict so it can't drift. *S · M*
+  — **Partial:** desktop/trackpad camera lines (WASD, arrows, Alt+follow, MMB,
+  Shift/Space pan, two-finger zoom/yaw/pinch) now match code via
+  `OnboardingLegibility.cheat_sheet_lines`; full single `CONTROLS` dict still open.
 - [ ] **84. Mobile-aware scenario picker.** `scenario_picker.gd` `_build_card` is modal-first
   with no touch-target sizing; add a narrow-screen layout. *M · M*
 - [ ] **85. A non-destructive settings preview.** `settings_panel.gd` Apply reloads the scene

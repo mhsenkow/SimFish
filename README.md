@@ -376,13 +376,19 @@ forward-moving Walstad ecosystem (save format v4 → v5). Highlights:
 
 | Input | Action |
 |---|---|
-| Drag any mouse button | Orbit camera around the tank |
-| Scroll wheel | Zoom in / out |
-| W / S | Pan target forward / back |
-| A / D | Pan target left / right |
+| LMB drag | Orbit camera around the tank |
+| Shift/Space + LMB drag, or middle-drag | Pan |
+| RMB drag | Dolly (zoom by dragging) |
+| Scroll wheel | Zoom in / out (toward cursor) |
+| Trackpad two-finger vertical / horizontal | Zoom / yaw |
+| Trackpad pinch | Zoom |
+| Shift/Space + two-finger | Pan |
+| W / S / A / D | Pan target on the horizontal plane |
 | Q / E | Pan target down / up |
+| Arrow keys | Orbit (yaw / pitch) |
+| Alt + ← / → | Cycle follow target |
 | F | Reset view |
-| Space | Toggle slow auto-orbit (cinematic) |
+| G | Toggle slow auto-orbit (cinematic) |
 | Click on a creature | Open the PiP portal that follows it |
 | C | Toggle PiP portal |
 | ESC | Clear follow target |

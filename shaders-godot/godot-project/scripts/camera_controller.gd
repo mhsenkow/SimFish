@@ -22,6 +22,14 @@ const PAN_MOUSE_SENSITIVITY: float = 0.012  # world units per pixel at radius=1
 const ZOOM_FACTOR: float = 1.12
 # Pinch sensitivity: how much of a macOS magnify gesture becomes zoom.
 const MAGNIFY_ZOOM_GAIN: float = 1.55
+# Arrow-key orbit speed (rad/s at vessel scale 1). Matches a gentle mouse drag.
+const KEYBOARD_ORBIT_SPEED: float = 1.15
+# Trackpad PanGesture: ignore sub-deadzone jitter; prefer the dominant axis so
+# a mostly-vertical zoom flick does not also yaw.
+const PAN_GESTURE_DEADZONE: float = 0.025
+const PAN_GESTURE_DOMINANCE: float = 1.35
+# Soft zoom limit zone as a fraction of the orbit shell span.
+const ZOOM_SOFT_FRAC: float = 0.14
 const MIN_RADIUS: float = 4.0
 const MACRO_MIN_RADIUS: float = 2.2  # REAL_TANK_FIDELITY #193
 const MAX_RADIUS: float = 55.0
@@ -141,6 +149,71 @@ static func drain_zoom_budget(budget: float, dt: float) -> Array:
 
 static func clamp_zoom_budget(budget: float) -> float:
 	return clampf(budget, -ZOOM_BUDGET_MAX, ZOOM_BUDGET_MAX)
+
+
+# Ease log-zoom as radius approaches MIN/MAX so the stop feels like a soft
+# bump (PLAYER_WISH #398) rather than a hard wall that reads as "broken".
+static func soften_log_zoom_at_limit(radius: float, log_zoom: float,
+		min_r: float = MIN_RADIUS, max_r: float = MAX_RADIUS) -> float:
+	if absf(log_zoom) < 0.000001:
+		return 0.0
+	var span: float = maxf(max_r - min_r, 1.0)
+	var soft: float = span * ZOOM_SOFT_FRAC
+	if log_zoom > 0.0:
+		# Zoom out → radius grows toward max_r.
+		var headroom: float = maxf(max_r - radius, 0.0)
+		if headroom >= soft:
+			return log_zoom
+		var k: float = headroom / soft
+		return log_zoom * k * k
+	# Zoom in → radius shrinks toward min_r.
+	var room: float = maxf(radius - min_r, 0.0)
+	if room >= soft:
+		return log_zoom
+	var ki: float = room / soft
+	return log_zoom * ki * ki
+
+
+# Filter a trackpad PanGesture delta: drop jitter, then zero the minor axis
+# when one axis clearly dominates (diagonal flick → pure zoom or pure yaw).
+static func pan_gesture_axes(delta: Vector2,
+		deadzone: float = PAN_GESTURE_DEADZONE,
+		dominance: float = PAN_GESTURE_DOMINANCE) -> Vector2:
+	var out: Vector2 = delta
+	if absf(out.x) < deadzone:
+		out.x = 0.0
+	if absf(out.y) < deadzone:
+		out.y = 0.0
+	var ax: float = absf(out.x)
+	var ay: float = absf(out.y)
+	if ax > 0.0 and ay > 0.0:
+		if ax >= ay * dominance:
+			out.y = 0.0
+		elif ay >= ax * dominance:
+			out.x = 0.0
+	return out
+
+
+# Synthetic mouse-pixel delta for continuous arrow-key orbit. Fed into orbit()
+# so keyboard and mouse share one path. left/right/up/down are held keys.
+static func keyboard_orbit_pixels(left: bool, right: bool, up: bool, down: bool,
+		dt: float, vessel_scale: float = 1.0,
+		speed: float = KEYBOARD_ORBIT_SPEED) -> Vector2:
+	var hx: float = 0.0
+	var hy: float = 0.0
+	if right:
+		hx += 1.0
+	if left:
+		hx -= 1.0
+	if down:
+		hy += 1.0
+	if up:
+		hy -= 1.0
+	if hx == 0.0 and hy == 0.0:
+		return Vector2.ZERO
+	# Convert rad/s into the pixel delta orbit() expects at base SENSITIVITY.
+	var px_per_sec: float = (speed * clampf(vessel_scale, 0.65, 1.5)) / SENSITIVITY
+	return Vector2(hx, hy) * px_per_sec * maxf(dt, 0.0)
 
 
 # Pan: slide target perpendicular to the view using the camera basis right/up.
