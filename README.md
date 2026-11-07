@@ -4,7 +4,7 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.52](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.52)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
+**Latest release: [v0.2.53](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.53)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
 
 ## Where things are at (November 2026)
 
@@ -183,6 +183,13 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - Population dynamics cycling — fry born, some eaten, survivors mature, breed, repeat
 
 ## Recent additions
+
+### v0.2.53 — smoke fixes, mind wiring, felt oxygen
+
+- **Stability:** seven smoke regressions cleared; fish tails stay on the body; behaviour restored with lower fish/snail CPU.
+- **Mind:** Mind panel reads through MindState; spark shaders, dawn latch, and felt oxygen land on live fish.
+
+[Release notes](docs/RELEASE_v0.2.53.md)
 
 ### v0.2.52 — motion that reads as life, crowded tanks stay light
 

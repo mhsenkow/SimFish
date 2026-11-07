@@ -50,10 +50,10 @@ https://mhsenkow.github.io/SimFish/docs/privacy.html
 2. Wait for the aquascape to build; pinch/drag camera; open Care / Feed.  
 3. Optional: Settings → confirm touch controls.  
 
-No login. Next store build **0.2.51 (64)**. ASC marketing version stays **1.0**.
+No login. Next store build **0.2.53 (66)**. ASC marketing version stays **1.0**.
 
 ## Build / encryption
-- Marketing version **0.2.51**, build **64** (ASC version string **1.0**)  
+- Marketing version **0.2.53**, build **66** (ASC version string **1.0**)  
 - `ITSAppUsesNonExemptEncryption` = false (HTTPS only; no custom crypto)
 
 ## API upload
@@ -74,7 +74,7 @@ cd build/ios
 xcodebuild -project WalstadLoom.xcodeproj -scheme WalstadLoom \
   -destination 'generic/platform=iOS' -archivePath Archive.xcarchive \
   DEVELOPMENT_TEAM=WC44W2QVE4 CODE_SIGN_STYLE=Automatic \
-  CURRENT_PROJECT_VERSION=64 -allowProvisioningUpdates archive
+  CURRENT_PROJECT_VERSION=66 -allowProvisioningUpdates archive
 xcodebuild -exportArchive -archivePath Archive.xcarchive \
   -exportPath export -exportOptionsPlist ExportOptions.plist \
   -allowProvisioningUpdates
@@ -89,9 +89,9 @@ xcodebuild -exportArchive -archivePath Archive.xcarchive \
 6. Upload IPA → assign to 1.0 → screenshots (iPhone 6.7" + iPad 13")  
 7. App Privacy → Data Not Collected  
 
-## Status (2026-10-29)
-- Desktop and the site ship **v0.2.51**. App Store Connect marketing version remains **1.0**; binary **0.2.51 / 64**.
-- ASC app `6823230910` — iOS + macOS were **Developer Rejected** after canceling stuck Waiting-for-Review submissions; rebuild **64** then **Add for Review**.
+## Status (2026-11-07)
+- Desktop and the site ship **v0.2.53**. App Store Connect marketing version remains **1.0**; binary **0.2.53 / 66**.
+- ASC app `6823230910` — iOS + macOS are **Ready for Sale** on 1.0; upload build **66** into a new version (or update) and submit.
 - Price **$2.99** USA base; categories Games → Simulation + Casual; secondary Entertainment  
 - Screenshots: iPhone 6.7" ×3, iPad 13" ×3, Mac 2560×1600 ×3 (App Preview video **not** required)  
 - Privacy: Data Not Collected + privacy URL live  
