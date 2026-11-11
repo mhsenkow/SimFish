@@ -9,6 +9,7 @@ extends Node
 const _SynthRingBuffer = preload("res://scripts/synth_ring_buffer.gd")
 const _PotatoAmbientBed = preload("res://scripts/potato_ambient_bed.gd")
 const _TankVoiceAudio = preload("res://scripts/tank_voice_audio.gd")
+const _UtteranceScript = preload("res://scripts/utterance.gd")
 
 const SAMPLE_RATE: int = 22050
 
@@ -3360,13 +3361,13 @@ func _voice_gain_db() -> float:
 
 
 func play_voice(kind: String, seed_v: int, length: int = 24, size01: float = 0.5,
-		bold01: float = 0.5, variant: int = 0) -> bool:
+		bold01: float = 0.5, variant: int = 0, felt: Dictionary = {}) -> bool:
 	if _voices == null:
 		return false
 	var gain_db: float = _voice_gain_db()
 	if gain_db <= -60.0:
 		return false
-	var p: Dictionary = _TankVoiceAudio.voice_params(kind, seed_v, length, size01, bold01, variant)
+	var p: Dictionary = _TankVoiceAudio.voice_params(kind, seed_v, length, size01, bold01, variant, felt)
 	if p.is_empty():
 		return false
 	var ok: bool = _voices.request(p, gain_db)
@@ -3402,8 +3403,11 @@ func on_fish_thought(fish: Node, line: String, addressed: bool = false) -> bool:
 		return false
 	var traits: Dictionary = _fish_voice_traits(fish)
 	if addressed:
+		# LOOM #76: read the felt snapshot at speak time, same source the
+		# Utterance uses, so the reply's prosody matches the body's state.
+		var felt: Dictionary = _UtteranceScript.felt_from_fish(fish)
 		return play_voice("fish", int(traits["seed"]), line.strip_edges().length(),
-			float(traits["size01"]), float(traits["bold01"]), absi(line.hash()) % 97)
+			float(traits["size01"]), float(traits["bold01"]), absi(line.hash()) % 97, felt)
 	return play_bloop("bloop", int(traits["seed"]), float(traits["size01"]))
 
 

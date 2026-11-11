@@ -165,8 +165,13 @@ static func h01(seed_v: int, salt: int) -> float:
 # length: characters in the line being spoken (scales the babble).
 # variant: reshuffles the syllable contour without moving the fish's pitch,
 # so one fish keeps a recognisable voice while no two replies sound alike.
+# felt (LOOM #76): the Utterance felt snapshot (valence/arousal/stress/fatigue/
+# confidence/surprise). It is stored on the params and, for voiced kinds, folded
+# into pitch/brightness/tempo/amp so the body's state is audible. The single
+# hinge of §4 — finer per-channel mappings (#77+) consume `p["felt"]`.
 static func voice_params(kind: String, seed_v: int, length: int = 24,
-		size01: float = 0.5, bold01: float = 0.5, variant: int = 0) -> Dictionary:
+		size01: float = 0.5, bold01: float = 0.5, variant: int = 0,
+		felt: Dictionary = {}) -> Dictionary:
 	var cs: int = seed_v + variant * 7919
 	var sz: float = clampf(size01, 0.0, 1.0)
 	var bd: float = clampf(bold01, 0.0, 1.0)
@@ -268,8 +273,53 @@ static func voice_params(kind: String, seed_v: int, length: int = 24,
 			p["syllables"] = pops
 		_:
 			return {}
+	if not felt.is_empty():
+		_apply_felt(p, kind, felt)
 	p["amp"] = minf(float(p["amp"]), PEAK_CEILING)
 	return p
+
+
+# LOOM #76: fold the felt snapshot into the render params. Honest, conservative
+# prosody — it shifts what already exists (pitch, brightness, tempo, amp) rather
+# than adding a new synth path, so the cache and the smooth envelope still hold.
+static func _apply_felt(p: Dictionary, kind: String, felt: Dictionary) -> void:
+	var valence: float = clampf(float(felt.get("valence", 0.0)), -1.0, 1.0)
+	var arousal: float = clampf(float(felt.get("arousal", 0.2)), 0.0, 1.0)
+	var stress: float = clampf(float(felt.get("stress", 0.0)), 0.0, 1.0)
+	var fatigue: float = clampf(float(felt.get("fatigue", 0.0)), 0.0, 1.0)
+	var confidence: float = clampf(float(felt.get("confidence", 0.5)), 0.0, 1.0)
+	var surprise: float = clampf(float(felt.get("surprise", 0.0)), 0.0, 1.0)
+	p["felt"] = {
+		"valence": valence, "arousal": arousal, "stress": stress,
+		"fatigue": fatigue, "confidence": confidence, "surprise": surprise,
+	}
+	# Arousal lifts pitch and surprise sharpens it; fatigue drags it down.
+	var pitch_mult: float = 1.0 + arousal * 0.08 + surprise * 0.05 - fatigue * 0.09
+	p["base_hz"] = float(p["base_hz"]) * clampf(pitch_mult, 0.82, 1.18)
+	# Stress tightens the timbre (brighter, harsher); low confidence dulls it.
+	p["brightness"] = clampf(float(p.get("brightness", 0.0))
+			+ stress * 0.25 - (1.0 - confidence) * 0.1, 0.0, 1.0)
+	p["lpf_hz"] = clampf(float(p["lpf_hz"]) * (1.0 + stress * 0.12), 600.0, 6000.0)
+	# Fatigue quiets the voice; arousal gives it a little more push.
+	p["amp"] = clampf(float(p["amp"]) * (1.0 + arousal * 0.1 - fatigue * 0.2), 0.02, PEAK_CEILING)
+	if kind != "fish":
+		return
+	# Tempo: an aroused fish babbles quicker and tighter; a tired one drawls.
+	var tempo: float = clampf(1.0 - arousal * 0.22 + fatigue * 0.25, 0.7, 1.4)
+	# Confidence steadies the pitch contour; doubt lets it wobble.
+	var glide_scale: float = clampf(0.6 + (1.0 - confidence) * 0.6, 0.6, 1.3)
+	# Valence bends the final glide up (bright) or down (flat).
+	var syls: Array = p.get("syllables", [])
+	var n: int = syls.size()
+	for i in n:
+		var s: Dictionary = syls[i]
+		s["t"] = float(s["t"]) * tempo
+		s["len"] = float(s["len"]) * tempo
+		s["glide"] = float(s["glide"]) * glide_scale + valence * 0.12
+		if i == 0 and surprise > 0.4:
+			s["mult"] = float(s["mult"]) * (1.0 + surprise * 0.12)
+		syls[i] = s
+	p["syllables"] = syls
 
 
 static func duration_s(p: Dictionary) -> float:
@@ -433,10 +483,18 @@ func _free_player() -> AudioStreamPlayer:
 
 
 func _cache_key(params: Dictionary) -> String:
-	return "%s|%d|%d|%d|%.2f|%.3f" % [
+	# Include a coarse felt fingerprint (#76) so two states that happen to share
+	# base_hz/brightness but differ in tempo/contour do not collide in the cache.
+	var felt: Dictionary = params.get("felt", {})
+	var ff: int = 0
+	if not felt.is_empty():
+		ff = int(round(float(felt.get("arousal", 0.0)) * 9.0)) * 100 \
+				+ int(round(float(felt.get("fatigue", 0.0)) * 9.0)) * 10 \
+				+ int(round((float(felt.get("valence", 0.0)) + 1.0) * 4.5))
+	return "%s|%d|%d|%d|%.2f|%.3f|%d" % [
 		String(params["kind"]), int(params["seed"]), int(params.get("variant", 0)),
 		(params["syllables"] as Array).size(), float(params["base_hz"]),
-		float(params["brightness"])]
+		float(params["brightness"]), ff]
 
 
 func _cache_put(key: String, w: AudioStreamWAV) -> void:
