@@ -245,7 +245,63 @@ static func _collect_slow_bids(f, _sim, dl: float, use_efe: bool) -> Array:
 			slow.append(tomf)
 		for eb in MindSoulPass3.collect_extra_bids(f, _sim):
 			slow.append(eb)
+	# LOOM #185: a chemistry bid in the workspace. The tank self-model (#301)
+	# carries each vital's deviation and trend; the worst felt-water channel,
+	# amplified by a worsening trend and the fish's sensitivity, bids to win
+	# attention so gaze, voice and narration can land on what is actually wrong.
+	var wb: Dictionary = _collect_water_sense_bid(f, _sim)
+	if not wb.is_empty():
+		slow.append(wb)
 	return slow
+
+
+# The five felt-water channels (#185). Each reads a TankVitals channel and the
+# direction in which that channel hurts a fish.
+const _WATER_CHANNELS: Array = [
+	{"vital": "o2", "label": "thin", "harm_sign": -1.0, "scale": 1.3},
+	{"vital": "toxic_ammonia", "label": "burn", "harm_sign": 1.0, "scale": 3.5},
+	{"vital": "nitrite", "label": "sour", "harm_sign": 1.0, "scale": 2.0},
+	{"vital": "nitrate", "label": "stale", "harm_sign": 1.0, "scale": 0.05},
+	{"vital": "bloom", "label": "slack", "harm_sign": 1.0, "scale": 1.0},
+]
+
+
+static func _collect_water_sense_bid(f, sim) -> Dictionary:
+	if sim == null or not sim.has_method("tank_vitals_snapshot"):
+		return {}
+	var snap: Dictionary = sim.tank_vitals_snapshot()
+	if snap.is_empty():
+		return {}
+	# Species/individual water sensitivity (#219 forward-compat): 1.0 default.
+	var sens: float = 1.0
+	if f.get("water_sensitivity") != null:
+		sens = clampf(float(f.get("water_sensitivity")), 0.1, 3.0)
+	var best_p: float = 0.0
+	var best_label: String = ""
+	for ch in _WATER_CHANNELS:
+		var vital: String = String(ch["vital"])
+		if not snap.has(vital):
+			continue
+		var row: Dictionary = snap[vital]
+		var dev: float = float(row.get("deviation", 0.0)) * float(ch["harm_sign"])
+		# Felt O2: fold the brown-blood penalty in, so thin water the fish can
+		# genuinely feel bids even before the tank's O2 median catches up.
+		if vital == "o2":
+			dev += float(f.get("_chem_o2_penalty") if f.get("_chem_o2_penalty") != null else 0.0)
+		if dev <= 0.0:
+			continue
+		var pressure: float = clampf(dev * float(ch["scale"]), 0.0, 1.0)
+		# A worsening trend (slope in the harmful direction) amplifies it.
+		var slope: float = float(row.get("short_slope", 0.0)) * float(ch["harm_sign"])
+		var trend: float = 1.0 + clampf(slope * float(ch["scale"]) * 40.0, 0.0, 0.8)
+		var p: float = pressure * trend
+		if p > best_p:
+			best_p = p
+			best_label = String(ch["label"])
+	if best_label == "" or best_p < 0.12:
+		return {}
+	var salience: float = clampf(best_p * sens, 0.0, 1.0)
+	return _bid(f, "water_sense", salience, ["water", "interoception", best_label])
 
 
 static func collect_bids(f, _sim) -> Array:
