@@ -8976,6 +8976,14 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 					_safe_normalize(global_transform.basis.y, Vector3.UP), _gaze_yaw)
 				_motion_gaze.look_at_point(&"curiosity",
 					global_position + look_dir * 2.5, maxf(_gaze_remaining, 0.4))
+			elif _behavior_ws_bias.length_squared() > 0.0025:
+				# LOOM #196: the eyes go where the mind is. The workspace's
+				# winning content pulls the body via _behavior_ws_bias; let the
+				# gaze lead toward that same direction so the fish visibly
+				# looks at what it is attending to.
+				var mind_dir: Vector3 = _safe_normalize(_behavior_ws_bias)
+				_motion_gaze.look_at_point(&"mind",
+					global_position + mind_dir * 2.5, 0.8)
 			# Converge when feeding / gaping / yawning (#299).
 			var want_converge: float = 0.0
 			if _mouth_gape > 0.15 or current_mode == Mode.FORAGE:

@@ -4,15 +4,19 @@ extends RefCounted
 # Where a creature is looking, and how its eyes and head get there
 # (CREATURE_MOTION_700 #53, #298–#301). Gaze is the cheapest anticipation:
 # the eyes move first, the head follows, then the body. A target carries a
-# kind and a priority (threat > food > mate > rival > keeper > curiosity >
-# idle); the highest live one wins. Each eye saccades on its own schedule
+# kind and a priority (threat > food > mate > rival > keeper > mind >
+# curiosity > idle); the highest live one wins. Each eye saccades on its own
+# schedule
 # (#298, #300). Feeding converges both eyes inward (#299).
 #
 # step() writes per-eye yaw/pitch and a head-lead yaw, in radians relative
 # to the body's forward axis.
 
+# LOOM #196: `mind` — the fish looks at what its workspace is attending to.
+# It sits just under keeper and above a plain curiosity glance.
 const PRIORITY: Dictionary = {
-	&"threat": 6, &"food": 5, &"mate": 4, &"rival": 3, &"keeper": 2, &"curiosity": 1, &"idle": 0,
+	&"threat": 7, &"food": 6, &"mate": 5, &"rival": 4, &"keeper": 3,
+	&"mind": 2, &"curiosity": 1, &"idle": 0,
 }
 const EYE_YAW_MAX: float = 0.45
 const EYE_PITCH_MAX: float = 0.25
