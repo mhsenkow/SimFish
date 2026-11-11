@@ -491,8 +491,8 @@ Steam desktop upload: `./steam/stage_content.sh` then `STEAM_USERNAME=you ./stea
 ```
 SimFish/
 ├── shaders-godot/godot-project/    # THE GAME — open this in Godot
-│   ├── main.tscn                   # root scene: SubViewport (default 1024×576) + palette Display + TopHUD
-│   ├── tank_menu.tscn              # tank-picker shown on launch (main scene)
+│   ├── tank_menu.tscn              # launch / picker scene (`project.godot` run/main_scene)
+│   ├── main.tscn                   # in-tank scene: SubViewport (default 1024×576) + palette Display + TopHUD
 │   ├── project.godot               # 11 autoloads (AppLog…GamepadInput); config/version tracks release
 │   ├── scripts/                    # GDScript — see subsystem list below (~642 files, ~295 smokes)
 │   ├── shaders/                    # .gdshader files (render pipeline below)

@@ -44,7 +44,8 @@ If your change touches one subsystem, add or extend a `extends SceneTree` smoke 
 
 ## How we pick work
 
-- **Idea docs are the spec** — see [docs/INDEX.md](docs/INDEX.md). Releases:
+- **Idea docs are the spec** — see [docs/INDEX.md](docs/INDEX.md) (includes
+  current version / autoload / smoke counts). Releases:
   [CHANGELOG.md](CHANGELOG.md). Do foundations first;
   one idea at a time; read the cited `file:line` pointer before editing.
 - **Extend, don't reinvent** — the project is mature; items marked shipped in docs stay

@@ -178,7 +178,7 @@ Index: [adr/README.md](adr/README.md).
 
 | ADR | Decision |
 |---|---|
-| [001-sim-rust-reference.md](adr/001-sim-rust-reference.md) | `sim-rust/` stays reference-only |
+| [001-sim-rust-reference.md](adr/001-sim-rust-reference.md) | **Superseded by 003** — originally reference-only |
 | [002-data-schemas-reference.md](adr/002-data-schemas-reference.md) | `data-schemas/` stays non-normative until wired |
 | [003-sim-rust-as-oracle.md](adr/003-sim-rust-as-oracle.md) | `sim-rust/` kept and tested as a chemistry oracle (supersedes 001) |
 

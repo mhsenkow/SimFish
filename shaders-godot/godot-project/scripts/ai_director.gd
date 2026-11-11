@@ -12,6 +12,7 @@ const MindConversation = preload("res://scripts/mind_conversation.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
 const GuardianGrounding = preload("res://scripts/guardian_grounding.gd")
+const LLMSchema = preload("res://scripts/llm_schema.gd")
 
 const OLLAMA_PARSE_MAX_BYTES: int = 8192
 # /api/tags lists every installed model with its details — a dozen models is
@@ -796,23 +797,18 @@ func _on_bios_response(result: int, code: int, _h: PackedStringArray, body: Pack
 	var inner: Dictionary = _parse_ollama_inner_response(body)
 	if inner.is_empty():
 		return
-	var bios: Variant = inner.get("bios", [])
-	if bios is Array:
-		for b_v in bios:
-			if not (b_v is Dictionary):
-				continue
-			var fid: String = String(b_v.get("id", ""))
-			var line: String = String(b_v.get("line", "")).strip_edges()
-			if fid == "" or line == "":
-				continue
-			_bio_results[fid] = line
-			emit_signal("fish_bio_ready", fid, line)
+	# DEEP_SCIENCE #71: enforce the bios schema before anything reaches the
+	# game — malformed/empty entries are structurally dropped here.
+	var bios: Array = LLMSchema.validate_bios(inner)
+	for b_v in bios:
+		var fid: String = String(b_v.get("id", ""))
+		var line: String = String(b_v.get("line", ""))
+		_bio_results[fid] = line
+		emit_signal("fish_bio_ready", fid, line)
 	# Drop processed entries from the pending queue.
 	var served: Dictionary = {}
-	if bios is Array:
-		for b_v2 in bios:
-			if b_v2 is Dictionary:
-				served[String(b_v2.get("id", ""))] = true
+	for b_v2 in bios:
+		served[String(b_v2.get("id", ""))] = true
 	var keep: Array = []
 	for e in _bio_pending:
 		if not served.has(String(e.get("id", ""))):
@@ -926,34 +922,26 @@ func _on_intent_response(result: int, code: int, _h: PackedStringArray, body: Pa
 
 
 func _apply_intent_payload(payload: Dictionary) -> void:
+	# DEEP_SCIENCE #71: enforce the intent schema first. Out-of-vocab regions
+	# and moods are dropped here, so only valid entities drive the grid.
+	var clean: Dictionary = LLMSchema.validate_intent(payload)
 	# Reset the grid
 	_intent_cells.clear()
 	_intent_cells.resize(INTENT_GRID * INTENT_GRID * INTENT_GRID)
-	var regions: Variant = payload.get("regions", [])
-	if regions is Array:
-		for r_v in regions:
-			if not (r_v is Dictionary):
-				continue
-			var region_name: String = String(r_v.get("region", "")).to_lower()
-			var mood: String = String(r_v.get("mood", "")).to_lower()
-			_apply_region_mood(region_name, mood)
+	for r_v in clean["regions"]:
+		_apply_region_mood(String(r_v.get("region", "")), String(r_v.get("mood", "")))
 	# Per-named-fish moods, expire after ~3 intent windows so they fade
 	# gracefully if the LLM stops mentioning that fish.
-	var fish_moods: Variant = payload.get("fish_moods", [])
 	var now: int = int(Time.get_unix_time_from_system())
 	var expiry: int = now + int(intent_refresh_period_s * 3.0)
-	if fish_moods is Array:
-		for fm_v in fish_moods:
-			if not (fm_v is Dictionary):
-				continue
-			var fid: String = String(fm_v.get("id", ""))
-			var fm: String = String(fm_v.get("mood", "")).to_lower()
-			if fid != "" and fm != "":
-				_fish_moods[fid] = {
-					"mood": fm,
-					"drift": _mood_drift(fm) * 0.6,
-					"expires_unix": expiry,
-				}
+	for fm_v in clean["fish_moods"]:
+		var fid: String = String(fm_v.get("id", ""))
+		var fm: String = String(fm_v.get("mood", ""))
+		_fish_moods[fid] = {
+			"mood": fm,
+			"drift": _mood_drift(fm) * 0.6,
+			"expires_unix": expiry,
+		}
 	# Prune expired
 	var stale: Array = []
 	for k in _fish_moods.keys():
@@ -963,7 +951,7 @@ func _apply_intent_payload(payload: Dictionary) -> void:
 		_fish_moods.erase(k)
 	# Chronicle line
 	if chronicle_enabled:
-		var line: String = _validated_chronicle(String(payload.get("narration", "")))
+		var line: String = _validated_chronicle(String(clean.get("narration", "")))
 		if line != "":
 			emit_signal("chronicle_line", line, PackedStringArray(["intent"]))
 
