@@ -6,6 +6,8 @@ The aesthetic is **pixel art with sim depth underneath**. Internal sim runs cont
 
 **Latest release: [v0.2.53](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.53)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
 
+Docs map: [docs/INDEX.md](docs/INDEX.md) · release history: [CHANGELOG.md](CHANGELOG.md)
+
 ## Where things are at (November 2026)
 
 | Area | Status |
@@ -129,12 +131,14 @@ reef preset) the substrate type. The included presets:
 | Reef (saltwater) | Coral reef + mixed tropical school, each fish rolls a unique morph |
 | Custom | Hand-set counts (UI exposes glassdart/mudsifter/shrimp counts) |
 
-Species are defined in `tank_config.gd`'s `SPECIES_LIBRARY` — currently
-glassdart tetra, mudsifter (kuhli-like), betta, killifish, guppy, dwarf
-pufferfish, zebra danio, corydoras, angelfish, and a mixed reef school
-that rolls one of 9 tropical morphs per individual. Adding a new species
-is one entry in the library; presets reference species by key and pick
-them up automatically.
+Species are defined in `tank_config.gd`'s `SPECIES_LIBRARY` — **18** playable
+spawn templates (cardinal tetra, kuhli-like mudsifter, betta, killifish,
+guppy, Endler, rummy-nose, ember tetra, dwarf puffer, danio, corydoras,
+angelfish, harlequin rasbora, otocinclus, bristlenose pleco, dwarf gourami,
+mixed reef morph school, hillstream loach; plus two manual-spawn spares).
+`real_species_library.gd` / `real_species_fauna.gd` are read-only discovery
+catalogs, not spawn tables. Adding a playable species is one Dictionary
+entry; presets reference species by key and pick them up automatically.
 
 Plus the cast that's not configurable per preset:
 - **Plants** in four zones (background blades, midground rosettes, foreground carpet, moss clumps on driftwood) — voxel-by-voxel growth fed by the substrate nutrient field. Saltwater tanks replace plants with corals.
@@ -184,12 +188,17 @@ Substrate nutrients ← waste deposits + reservoir trickle
 
 ## Recent additions
 
+Canon through **v0.2.53**: [CHANGELOG.md](CHANGELOG.md). Per-tag stubs:
+`docs/RELEASE_v0.2.*.md`. Historical pass measurements:
+[docs/archive/passes/](docs/archive/passes/). Full doc map:
+[docs/INDEX.md](docs/INDEX.md).
+
 ### v0.2.53 — smoke fixes, mind wiring, felt oxygen
 
 - **Stability:** seven smoke regressions cleared; fish tails stay on the body; behaviour restored with lower fish/snail CPU.
 - **Mind:** Mind panel reads through MindState; spark shaders, dawn latch, and felt oxygen land on live fish.
 
-[Release notes](docs/RELEASE_v0.2.53.md)
+[Release notes](docs/RELEASE_v0.2.53.md) · [CHANGELOG](CHANGELOG.md#v0253)
 
 ### v0.2.52 — motion that reads as life, crowded tanks stay light
 
@@ -197,7 +206,7 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - **GPU bone palette:** shared species batches skin on the GPU (~14× less per-frame fauna sync on the measured probe).
 - **Store / Play:** refreshed Steam capsules; Android Play console notes and marketing assets.
 
-[Release notes](docs/RELEASE_v0.2.52.md)
+[Release notes](docs/RELEASE_v0.2.52.md) · [CHANGELOG](CHANGELOG.md#v0252)
 
 ### v0.2.51 — a realism pass: real water, a lit room, a tank that has lived
 
@@ -207,7 +216,7 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - **History in everything:** planted stands and crowned stem plants, spindle-shaped fish, branching driftwood with algae, gravel-over-soil at the glass, established snail colonies.
 - **Reef on live rock:** arch, cave and bommie crusted in coralline, corals on the ledges, clearer water.
 
-[Release notes](docs/RELEASE_v0.2.51.md)
+[Release notes](docs/RELEASE_v0.2.51.md) · [CHANGELOG](CHANGELOG.md#v0251)
 
 ### v0.2.50 — long-run ecology and cleaner first run
 
@@ -216,21 +225,21 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - **Silhouette polish:** stepped fish muzzles, darker pupils, denser fan-tail roots; shared foliage light include.
 - **Includes v0.2.48 / v0.2.41:** labeled HUD, day clock, and the tank filling the desktop window.
 
-[Release notes](docs/RELEASE_v0.2.50.md)
+[Release notes](docs/RELEASE_v0.2.50.md) · [CHANGELOG](CHANGELOG.md#v0250)
 
 ### v0.2.41 — the tank fills the desktop window
 
 - **No black bars:** the view grows past the old 16:9 frame. A 16:10 screen shows more room above and below; a wider screen shows more to the sides.
 - **Includes v0.2.40:** drawn nav icons on iPad and iPhone.
 
-[Release notes](docs/RELEASE_v0.2.41.md)
+[Release notes](docs/RELEASE_v0.2.41.md) · [CHANGELOG](CHANGELOG.md#v0241)
 
 ### v0.2.40 — drawn nav icons
 
 - **iPad and iPhone nav:** rail and touch buttons use 12×12 pixel icons instead of font glyphs that IBM Plex does not include and iPad does not substitute.
 - **Same simulation:** color, habitats, and long-session work from v0.2.39 are unchanged.
 
-[Release notes](docs/RELEASE_v0.2.40.md)
+[Release notes](docs/RELEASE_v0.2.40.md) · [CHANGELOG](CHANGELOG.md#v0240)
 
 ### v0.2.39 — color, habitats, and long-session performance
 
@@ -241,7 +250,7 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - **Long sessions:** reusable fauna slots, departed-fish cache/job cleanup, weak material registries — keep living memories, drop stale work.
 - **Validation:** 613 scripts, zero analyzer warnings; all 260 smokes pass (~156 s).
 
-[Release notes](docs/RELEASE_v0.2.39.md) · [Color and light](docs/COLOR_AND_LIGHT_20261008.md) · [Habitats](docs/HABITAT_INTERACTIONS_20261008.md) · [Locomotion](docs/LIVING_LOCOMOTION_20261008.md) · [Crowded fish](docs/CROWDED_FISH_PERFORMANCE_20261008.md) · [Tending](docs/TENDING_PERFORMANCE_20261009.md) · [Render/schooling](docs/RENDER_SCHOOLING_PERFORMANCE_20261009.md) · [Retention](docs/LONG_SESSION_RETENTION_20261009.md) · [iOS App Store](docs/IOS_APP_STORE.md)
+[Release notes](docs/RELEASE_v0.2.39.md) · [CHANGELOG](CHANGELOG.md#v0239) · [Pass archive](docs/archive/passes/) · [iOS App Store](docs/IOS_APP_STORE.md)
 
 ### v0.2.38 — quieter music, living defaults, and reliable ecology
 
@@ -253,7 +262,7 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - **Less repeated work:** shared per-frame fish music responses, occupied-cell habitat queries, cached plant-chemical concentrations, and fewer temporary arrays in neighbour searches.
 - **Validation:** 571 scripts compile with zero analyzer warnings; all 237 local smoke tests pass, with zero failures or timeouts. Targeted CPU benchmarks are recorded in the pass notes; they do not measure whole-game FPS.
 
-[Release notes](docs/RELEASE_v0.2.38.md) · [Music pass](docs/MUSIC_LOFI_PASS_20261007.md) · [Swimming pass](docs/SWIMMING_MOTION_PASS_20261007.md) · [Ready defaults](docs/EXPERIENCE_AND_READY_DEFAULTS_20261007.md) · [Seed reliability](docs/SEEDLING_RELIABILITY_PERFORMANCE_PASS_20261007.md) · [Ecology performance](docs/ECOLOGY_RESTORE_QUERY_PASS_20261007.md) · [Living habitats](docs/HABITAT_INTERACTIONS_20261008.md) · [Living locomotion](docs/LIVING_LOCOMOTION_20261008.md) · [Color and light](docs/COLOR_AND_LIGHT_20261008.md) · [Fish flash diagnosis](docs/FISH_FLASH_DIAGNOSIS_20261008.md)
+[Release notes](docs/RELEASE_v0.2.38.md) · [CHANGELOG](CHANGELOG.md#v0238) · [Pass archive](docs/archive/passes/)
 
 ### v0.2.25 — polish & stability
 
@@ -353,17 +362,17 @@ forward-moving Walstad ecosystem (save format v4 → v5). Highlights:
 - First-launch render resolution seeded from the detected device tier
 - Crowded-fish pass: spatial school merges, stable school identities, shared bone
   transform updates, and one fin pose per rendered frame.
-  [Measurements and remaining limits](docs/CROWDED_FISH_PERFORMANCE_20261008.md).
+  [Measurements and remaining limits](docs/archive/passes/CROWDED_FISH_PERFORMANCE_20261008.md).
 - Mind and tending pass: owned worker handoffs, bounded recall caches, shared
   attention counts, retained learning, complete starter habitats and appetite-based
-  automatic feeding. [Measurements and validation](docs/TENDING_PERFORMANCE_20261009.md).
+  automatic feeding. [Measurements and validation](docs/archive/passes/TENDING_PERFORMANCE_20261009.md).
 - Render/schooling follow-up: single instance uploads, bone-group culling bounds,
   exact no-op guards and cached neighbor selection, with behavior equivalence checks.
-  [Measurements and remaining costs](docs/RENDER_SCHOOLING_PERFORMANCE_20261009.md).
+  [Measurements and remaining costs](docs/archive/passes/RENDER_SCHOOLING_PERFORMANCE_20261009.md).
 - Long-session retention: reusable fauna slots, departed-fish cache/job cleanup,
   weak material registries and coarse plant-buffer maintenance preserve living
   memories while releasing stale work.
-  [Aging probes and validation](docs/LONG_SESSION_RETENTION_20261009.md).
+  [Aging probes and validation](docs/archive/passes/LONG_SESSION_RETENTION_20261009.md).
 - Frame-budget sparkline in the Render panel
 - Lazy substrate cell ticks (only diffuses dirty cells near active plants/waste)
 
@@ -447,11 +456,11 @@ For desktop Steam integration, install GodotSteam once:
 
 ```bash
 git clone https://github.com/mhsenkow/SimFish.git
-cd SimFish/shaders-godot/godot-project
-godot --path . main.tscn
+cd SimFish
+./scripts/godot.sh --path shaders-godot/godot-project tank_menu.tscn
 ```
 
-Or open `shaders-godot/godot-project/project.godot` in the Godot editor and press F5.
+Or open `shaders-godot/godot-project/project.godot` in the Godot editor and press F5 (main scene is `tank_menu.tscn`). The wrapper finds `/Applications/Godot.app` on macOS; set `GODOT_BIN` otherwise.
 
 To export your own macOS build:
 
@@ -465,13 +474,13 @@ godot --path . --headless --export-debug "macOS" ../../build/WalstadLoom.app
 Pushing a version tag builds all four platforms on GitHub Actions and uploads to [Releases](https://github.com/mhsenkow/SimFish/releases). macOS builds are Developer ID signed and notarized when `NOTARY_*` / `APPLE_ID` secrets are set.
 
 ```bash
-git tag v0.2.25
-git push origin v0.2.25
+git tag v0.2.53
+git push origin v0.2.53
 ```
 
 Workflow: `.github/workflows/release.yml` (Godot 4.6.3, export presets in `export_presets.cfg`). Run manually from **Actions → Release builds** for artifacts only (no Release unless tagged).
 
-Steam desktop upload: `./steam/stage_content.sh` then `STEAM_USERNAME=you ./steam/upload.sh` — see [`steam/README.md`](steam/README.md).
+Steam desktop upload: `./steam/stage_content.sh` then `STEAM_USERNAME=you ./steam/upload.sh` — see [`steam/STEAMWORKS.md`](steam/STEAMWORKS.md).
 
 ## Repository layout
 
@@ -485,7 +494,7 @@ SimFish/
 │   ├── main.tscn                   # root scene: SubViewport (default 1024×576) + palette Display + TopHUD
 │   ├── tank_menu.tscn              # tank-picker shown on launch (main scene)
 │   ├── project.godot               # 11 autoloads (AppLog…GamepadInput); config/version tracks release
-│   ├── scripts/                    # GDScript — see subsystem list below (~500+ files incl. smokes)
+│   ├── scripts/                    # GDScript — see subsystem list below (~642 files, ~295 smokes)
 │   ├── shaders/                    # .gdshader files (render pipeline below)
 │   ├── assets/                     # theme + fonts
 │   ├── dev/fixtures/saves/         # synthetic save fixtures (Holistic #011)
@@ -495,7 +504,7 @@ SimFish/
 │   └── README.md                   # rendering-pipeline deep dive
 ├── sim-rust/                       # reference Rust chemistry sim (nitrogen cycle) — NOT wired into the game
 ├── data-schemas/                   # JSON Schemas + examples for species/plant/substrate data
-├── docs/                           # GitHub Pages landing (index.html/style.css/fonts/img) + GOALS.md backlog
+├── docs/                           # GitHub Pages + INDEX.md map, GOALS.md, idea backlogs, archive/passes/
 ├── steam/                          # Steamworks depots, upload scripts, store copy (store/STORE_PAGE.md)
 ├── style-guide/STYLE_GUIDE.md      # palettes, pixel rules, dithering
 ├── marketing/                      # capsule art, gameplay screenshots, logo lockups (sources/ = raw refs)
@@ -537,8 +546,9 @@ locked tier — runtime default is the TankConfig pair above.)
 render rate in each creature's `_process()` — fish and shrimp use a
 **heading + speed** model with bounded turn rate and linear acceleration so they
 curve through arcs instead of teleporting. Banking on yaw rate gives them a
-visible roll into turns. Authoritative clock/state ownership:
-[`ARCHITECTURE.md`](ARCHITECTURE.md) (Holistic #010).
+visible roll into turns. Authoritative clock/state/RNG ownership:
+[`ARCHITECTURE.md`](ARCHITECTURE.md) (Holistic #010). God-object carve /
+module map: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 **Schooling.** Boids with three upgrades: view cone (~115° in front), position prediction (cohesion targets `neighbor.position + neighbor.velocity * 0.4`), and speed matching toward school average.
 
@@ -560,7 +570,7 @@ Done since the original roadmap:
 
 - [x] Save/load tank state — per-slot state.json with substrate + preset compatibility checks
 - [x] Multi-tank menu — duplicate, delete, switch between tanks
-- [x] More fish species — 10 species in the library + a mixed-morph reef school
+- [x] More fish species — 18 playable `SPECIES_LIBRARY` templates + mixed-morph reef school
 - [x] Multiple biotopes — the Reef preset switches the world to saltwater + corals
 - [x] Mobile support — touch input, bottom-right action cluster, idle-dim HUD
 - [x] Day / night behavior shifts — diurnal vs nocturnal activity multipliers
@@ -572,9 +582,9 @@ Done since the original roadmap:
 - [x] Plant spatial grid, voxel LOD, self-tuning render tier, frame-budget sparkline, lazy substrate ticks (performance batch)
 - [x] New-tank scenario picker — **18** themed combos with distinct shapes + footprints + stocking (`scenario_picker.gd`)
 
-Up next: see [`docs/GOALS.md`](docs/GOALS.md) for the full 50-item checklist
-organized by category (motion, breeding, food web, plants, environment, etc.).
-Remaining work clusters around the background-object mode (transparent
+Up next: [`docs/GOALS.md`](docs/GOALS.md) (sections A–H checklist) and the
+director backlogs in [`docs/INDEX.md`](docs/INDEX.md) (Holistic 400, mega
+campaigns, motion toolkit). Remaining work clusters around the background-object mode (transparent
 window, click-through, multi-monitor), **multi-tank wallpaper (#50)**,
 more generative variety (markings, pattern types, asymmetry), and per-tier
 mobile polish.

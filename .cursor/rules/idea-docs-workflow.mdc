@@ -17,6 +17,11 @@ what to build. Your job is to implement them faithfully — not to redesign them
 - `docs/SYSTEMIC_IMPROVEMENTS_IDEAS.md` — supply chain, accessibility, sim-rust fate
 - `docs/GOALS.md` — the larger shipped/backlog tracker (sections A–H, 250+ shipped items).
 
+Full backlog map: `docs/INDEX.md` (mega campaigns, motion toolkit, platform docs,
+releases). Holistic execution uses `docs/HOLISTIC_FINISHING_PLAN_400.md` +
+`docs/HOLISTIC_FINISHING_LEDGER.md`. Do **not** treat `docs/archive/passes/` as
+new work — those are historical audits only.
+
 Repo layout + naming live in `AGENTS.md`. Read it once.
 
 ## How to pick work

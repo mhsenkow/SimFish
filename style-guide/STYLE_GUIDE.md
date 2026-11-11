@@ -1,5 +1,8 @@
 # walstad loom pixel-art style guide
 
+Doc map: [docs/INDEX.md](../docs/INDEX.md). Color/light measurements (archive):
+[docs/archive/passes/COLOR_AND_LIGHT_20261008.md](../docs/archive/passes/COLOR_AND_LIGHT_20261008.md).
+
 The look is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a small palette. Animation comes from the sim, not from sprite frames.
 
 ## 1. Resolution & camera
@@ -117,5 +120,5 @@ Warm beam cores and cool shaded planes should make each other read more clearly.
 Reflect the material pigment in broad light; reserve near-white for small catches.
 Keep animal markings intricate and hue-stable as they turn. Use emerald, sage and
 pale gold to separate leaf planes, and quiet earth/slate around vivid accents.
-See [the color and light pass](../docs/COLOR_AND_LIGHT_20261008.md) for the
+See [the color and light pass](../docs/archive/passes/COLOR_AND_LIGHT_20261008.md) for the
 Chevreul reference, implementation, and validation limits.

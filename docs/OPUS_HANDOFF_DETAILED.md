@@ -14,10 +14,12 @@ with acceptance criteria and smoke specs. Keep it in sync as sessions land.*
 **House rules:**
 - Strangler-fig only — extract behind existing call sites; no big-bang rewrites
 - One idea per session; verify with headless smokes before claiming done
-- Smoke command:
+- Smoke command (suite entrypoint — do not use `smoke_runner.gd`):
   ```bash
+  bash scripts/run_smokes.sh
+  # or a single smoke:
   ./scripts/godot.sh --headless --path shaders-godot/godot-project \
-    --script res://scripts/smoke_runner.gd
+    --script res://scripts/smoke_tank_shapes.gd
   ```
 - Mark shipped items `[x]` in the source idea doc with a one-line note
 - Do NOT redo: SimRng/MindRng/CognitionKernel stub, fauna MultiMesh batch,
@@ -275,7 +277,8 @@ README explaining reference-only status). Same for `sim-rust/`: wire via GDExten
 Deterministic `GuardianLlm` stub for headless CI (no 250MB GGUF). Mode:
 `GUARDIAN_LLM_STUB=1` or project setting. Returns a canned string from
 `hash(prompt_context)` — stable across runs. Files: `guardian_llm.gd`, autoload
-path, `smoke_guardian_plumbing.gd` (create). Verify: smoke_runner includes the new
+path, `smoke_guardian_plumbing.gd` (create). Verify: `scripts/run_smokes.sh`
+picks up the new
 smoke; CI passes without a model download. Then: SYSTEMIC #15 audit — confirm
 `generate_stream` never blocks the main thread.
 
@@ -316,7 +319,7 @@ Each is multi-week; don't start until ARCHITECTURE + perf governor exist.
 ## What NOT to send Opus (keep on Composer/Auto)
 
 - shellcheck on scripts (SYSTEMIC #62)
-- Doc checkoff hygiene, INDEX.md percentages
+- Doc checkoff hygiene (INDEX map; no shipped% column)
 - Profiler scope labels (META #66)
 - More golden-trace smokes (META #67)
 - Feed UX tweaks, alert dedup tuning

@@ -51,6 +51,7 @@ const _PlantFarFoliageBatchScript = preload("res://scripts/plant_far_foliage_bat
 const FoodWebTraceScript = preload("res://scripts/food_web_trace.gd")
 const _TankIlluminationScript = preload("res://scripts/tank_illumination.gd")
 const UtteranceScript = preload("res://scripts/utterance.gd")
+const TankVitalsScript = preload("res://scripts/tank_vitals.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -345,6 +346,19 @@ var _night_runtime: Dictionary = {
 	"screensaver_mode": false,
 }
 var _tank_mind: Dictionary = {}
+# LOOM #301/#251: the one tank self-model. Owns every vital, its normal, its
+# deviation, its trend and a saved history ring. Readers call snapshot().
+var _tank_vitals: TankVitals = TankVitalsScript.new()
+
+
+# LOOM #301: the canonical read of "the tank" — every vital with its normal,
+# deviation and trend. The mind, the voice and the chronicle read this.
+func tank_vitals_snapshot() -> Dictionary:
+	return _tank_vitals.snapshot()
+
+
+func tank_vitals_model() -> TankVitals:
+	return _tank_vitals
 
 
 func night_runtime() -> Dictionary:
@@ -1504,18 +1518,17 @@ func _tick_long_arc(dt: float) -> void:
 	if aeration_fixture == "filter":
 		_filter_media_age_s += dt
 		_filter_clog = clampf(_filter_clog + dt * 0.0000045, 0.0, 0.5)
+	# LOOM #301/#251: feed the one tank self-model its samples every tick.
+	_tank_vitals.observe(self, dt)
 	# Stability curve (#76): how steady the tank's chemistry is. 1.0 = serene,
-	# 0 = crashing. Smoothed so it reads as a slow-settling line.
+	# 0 = crashing. Smoothed so it reads as a slow-settling line. The
+	# instantaneous formula now lives in TankVitals (the single owner, #301);
+	# this is a reader of it.
 	_stability_sample_t -= dt
 	if _stability_sample_t <= 0.0:
 		_stability_sample_t = 1.0
-		var inst: float = 1.0
-		if water_chemistry != null:
-			inst -= clampf(float(water_chemistry.toxic_ammonia) * 4.0, 0.0, 0.5)
-			inst -= clampf(float(water_chemistry.nitrite) * 1.2, 0.0, 0.3)
-		inst -= clampf(absf(dissolved_o2 - 0.65) * 1.2, 0.0, 0.3)
-		inst -= clampf(bloom_intensity * 0.4, 0.0, 0.25)
-		stability = lerpf(stability, clampf(inst, 0.0, 1.0), 0.08)
+		var inst: float = TankVitalsScript.stability_instant(self)
+		stability = lerpf(stability, inst, 0.08)
 		# Crash legacy (#75): record when the tank dips into a real crash so the
 		# anniversary can recall "survived 2 crashes."
 		if stability < 0.30 and not _crash_latch:
@@ -6965,6 +6978,8 @@ func save_state() -> Dictionary:
 			"filter_media_age_s": _filter_media_age_s,
 			"filter_clog": _filter_clog,
 			"stability": stability,
+			# LOOM #251: the tank's remembered vitals (long ring + normals).
+			"tank_vitals_model": _tank_vitals.to_dict(),
 			"guardian_arc": _guardian_arc.duplicate(true),
 			"guardian_id": _guardian_id,
 			"guardian_journal": _guardian_journal.duplicate(true),
@@ -7130,6 +7145,7 @@ func load_state(d: Dictionary) -> void:
 	_filter_media_age_s = float(sim_d.get("filter_media_age_s", 0.0))
 	_filter_clog = float(sim_d.get("filter_clog", 0.0))
 	stability = float(sim_d.get("stability", 1.0))
+	_tank_vitals.from_dict(sim_d.get("tank_vitals_model", null))
 	var saved_guardian_arc: Variant = sim_d.get("guardian_arc", null)
 	if saved_guardian_arc is Dictionary:
 		_guardian_arc = (saved_guardian_arc as Dictionary).duplicate(true)

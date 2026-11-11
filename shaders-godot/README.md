@@ -1,5 +1,9 @@
 # Godot 4 rendering pipeline
 
+Doc map: [docs/INDEX.md](../docs/INDEX.md). Clocks and sim layers:
+[ARCHITECTURE.md](../ARCHITECTURE.md). Render + carve details:
+[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) §11.
+
 The look is a **3D voxel scene rendered through a 2D palette-quantize +
 dither shader**. The internal sim runs continuous — fish swim, plants grow,
 substrate diffuses — and the final pixel grid emerges from the shader pass,
@@ -8,19 +12,20 @@ not from hand-authored sprites.
 ## Pipeline
 
 ```
-  Camera3D in SubViewport (512×288)
+  Camera3D in SubViewport (TankConfig default 1024×576)
         │ renders voxel scene to a low-res texture
         ▼
   Display TextureRect
         │ applies palette_quantize.gdshader (snap to 48-color palette + Bayer dither)
         ▼
-  Window (nearest-neighbor upscale to whatever resolution)
+  Window (nearest-neighbor upscale to 1536×864)
 ```
 
-The SubViewport is the standard size — 512×288. The voxel scene lives
-inside it as `SubViewport/World/...`. The `Display` `TextureRect`
-samples the SubViewport's render and feeds it through the palette shader
-on its way to the window.
+Shipping internal size is **1024×576** (`TankConfig.render_width/height`).
+512×288 is the beauty / first-launch **mid** fidelity tier, not the
+default. Adaptive quality can step potato (256×144) through desktop.
+The voxel scene lives in `SubViewport/World/...`. The `Display`
+`TextureRect` samples that buffer through the palette shader.
 
 ## Shaders
 
@@ -38,7 +43,7 @@ See the root [README.md](../README.md) "shaders (the pipeline)" section for the 
 
 ```
 Main (Node)                          # main.gd, root
-├── SubViewport (512×288)            # the actual 3D scene
+├── SubViewport (1024×576 default)   # the actual 3D scene
 │   └── World (Node3D)               # world.gd, builds substrate + plants + creatures
 │       ├── WorldEnvironment         # palette-friendly soft env
 │       ├── DirectionalLight3D       # very low energy, fill only
@@ -72,7 +77,7 @@ stability, and persistence.
 |---|---|
 | `Rendering / Default Texture Filter` | Nearest |
 | `Rendering / Mobile renderer` (preferred for color stability) | Mobile |
-| `Display / Window / Stretch / Mode` | viewport |
+| `Display / Window / Stretch / Mode` | canvas_items (aspect expand) |
 | `Display / Window / Handheld / Orientation` | sensor |
 | `2D / Snap / Snap 2D Transforms to Pixel` | true |
 | Project name | walstad loom |
@@ -86,10 +91,12 @@ stability, and persistence.
 
 ## Adding a species
 
-Append an entry to `scripts/tank_config.gd`'s `SPECIES_LIBRARY` dict.
-Required fields: `label`, `description`, `genome` (with at least
-`species`, colors, `adult_voxel_scale`, `max_speed`, `preferred_y`).
-World.gd reads the library at spawn time — no other code needs to know.
+Append an entry to `scripts/tank_config.gd`'s `SPECIES_LIBRARY` dict
+(18 playable spawn templates today). Required fields: `label`,
+`description`, `genome` (with at least `species`, colors,
+`adult_voxel_scale`, `max_speed`, `preferred_y`). `world.gd` reads the
+library at spawn time. `real_species_library.gd` / `real_species_fauna.gd`
+are discovery catalogs, not spawn tables.
 
 Then reference the new species by key in any preset's `stocking` dict in
 `TANK_PRESETS`, or add a brand new preset. Both the settings dropdown

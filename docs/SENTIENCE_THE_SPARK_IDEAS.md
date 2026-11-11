@@ -1,5 +1,10 @@
 # Sentience — The Spark
 
+> **Superseded.** Do not start new implementation work from this doc.
+> Prefer [REFINEMENT_100_IDEAS.md](REFINEMENT_100_IDEAS.md) (and its sequel
+> [REFINEMENT_II_100_IDEAS.md](REFINEMENT_II_100_IDEAS.md)). Kept for cross-refs
+> only — see [INDEX.md](INDEX.md).
+
 *Director's brief: surface the invisible mind, close emergence loops, and wire
 expression/perf so cognition reads in motion, shader, sound, and save.*
 

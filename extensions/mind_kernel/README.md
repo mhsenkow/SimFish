@@ -1,5 +1,7 @@
 # MindKernelNative (optional GDExtension)
 
+Doc map: [docs/INDEX.md](../../docs/INDEX.md) (sentience / perf campaigns).
+
 Optional native acceleration for `MindKernel` (#49). The game ships with a
 full GDScript twin (`scripts/mind_kernel.gd`); this extension is not required
 for play or CI.

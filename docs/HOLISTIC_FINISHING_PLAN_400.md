@@ -1,5 +1,10 @@
 # walstad loom holistic finishing plan
 
+Navigation: [INDEX.md](INDEX.md) · execution evidence
+[HOLISTIC_FINISHING_LEDGER.md](HOLISTIC_FINISHING_LEDGER.md) · cross-campaign IDs
+[HOLISTIC_CROSSREF.md](HOLISTIC_CROSSREF.md). Historical pass notes:
+[archive/passes/](archive/passes/) only — not a spec for new tasks.
+
 This is a 400-task implementation plan for Cursor Composer. Its purpose is to make walstad loom more beautiful, more readable, more efficient, and more convincingly alive while preserving the ecological and cognitive systems already built. The strongest direction is a living aquarium whose history appears in its inhabitants, plants, water, surfaces, and sound. Care should have consequences the player can watch; quiet observation should remain rewarding.
 
 This document proposes work. Unchecked tasks are not claims that their features are entirely absent or broken. Many extend existing implementations. Before changing anything, inspect the current path and its callers; when the acceptance condition already holds, record the evidence and close the task without adding a parallel system.

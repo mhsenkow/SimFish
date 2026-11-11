@@ -10,15 +10,19 @@ the Walstad-style hyper-realistic ecosystem feel.
 - Impact: **S** (polish), **M** (noticeable), **L** (transforms how the tank feels).
 - Check items off as you ship them; add new ones as they come up.
 
-Last reviewed: 2026-06-16.
+Last reviewed: 2026-11-10 (header/nav only; checkbox bodies unchanged).
 
 **Source of truth:** shipped features are described in the top-level
-[README.md](../README.md) ("Recent additions" + "Roadmap"). This file tracks the
-remaining idea backlog. Of the original 50, only item **#50 (multi-tank wallpaper mode)**
-remains open. The new **Section H ("Living balance pass")** below is a 100-item
-holistic sweep aimed at making the whole Walstad ecosystem feel genuinely
-balanced, forward-moving, and alive — grounded in the current chemistry /
-nutrient / O₂ / population engine and the per-scenario default parameters.
+[README.md](../README.md) ("Recent additions" + "Roadmap") and
+[CHANGELOG.md](../CHANGELOG.md). Post-June campaigns (Holistic 400, mega-1000s,
+refinement/perf sequels, motion toolkit) are mapped in
+[INDEX.md](INDEX.md) — this file still tracks sections A–H (**251** checkboxes;
+250 done). Of the original 50, only item **#50 (multi-tank wallpaper mode)**
+remains open. The new **Section H
+("Living balance pass")** below is a 100-item holistic sweep aimed at making the
+whole Walstad ecosystem feel genuinely balanced, forward-moving, and alive —
+grounded in the current chemistry / nutrient / O₂ / population engine and the
+per-scenario default parameters.
 
 ---
 

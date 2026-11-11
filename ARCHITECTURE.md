@@ -1,7 +1,13 @@
 # Architecture — walstad loom / SimFish
 
+*Clocks, state ownership, RNG, and mind-tick path (Holistic #010).*
+
 *Map for safe refactors. Prerequisite for god-object decomposition
 ([ENGINEERING_EXCELLENCE #91](docs/ENGINEERING_EXCELLENCE_IDEAS.md)).*
+
+**Also read:** god-object carve module map →
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Full documentation map →
+[`docs/INDEX.md`](docs/INDEX.md).
 
 Open the game at `shaders-godot/godot-project/` (Godot 4.6+). Main scene:
 `tank_menu.tscn`.

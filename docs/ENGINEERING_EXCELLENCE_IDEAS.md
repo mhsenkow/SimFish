@@ -11,7 +11,9 @@ item either raises the engineering bar or directly protects the sentience system
 
 **The honest baseline (measured 2026-06-28).** This is already a serious codebase —
 **98,113 LOC across 174 scripts**, strongly typed (**12,496 typed declarations vs 52
-untyped**), **34 smoke tests**, a release pipeline, 7 focused autoloads. The
+untyped**), **34 smoke tests**, a release pipeline, 7 focused autoloads.
+Current counts (version, autoloads, smokes, LOC) live in
+[`docs/INDEX.md`](INDEX.md) — this paragraph is a point-in-time snapshot. The
 discipline *within* files is real. Three systemic issues hold it back from "best
 coded ever," all about **scale**:
 
@@ -106,7 +108,7 @@ sites with smoke tests pinning behavior at each step.*
 safety, and per-call string-hash cost at once.*
 
 - [ ] **11. Typed autoload access.** Replace the 255 `get_node_or_null("/root/X")` with
-  direct typed singleton references (the 7 autoloads can expose typed APIs). *S · M*
+  direct typed singleton references (the 11 autoloads can expose typed APIs). *S · M*
 - [ ] **12. Resolve handles once.** Where dynamic lookup is unavoidable, cache the node in
   `_ready()`, never per-call/per-frame (several giants re-resolve every tick). *S · M*
 - [ ] **13. Typed interfaces over `has_method()` (916!).** Define `Creature` / `Mind` base
@@ -314,8 +316,10 @@ module count grow.*
   consistent; codify and lint it. *S · M*
 - [ ] **84. A dead-code sweep.** Static-analyze 98k LOC for unused funcs/vars/signals — the
   single TODO suggests debt is *hidden*, not absent. *M · M*
-- [ ] **85. De-dupe the idea docs.** `CONSCIOUSNESS_ENGINEERING_IDEAS.md` lives in both repo
-  root and `docs/` — one source of truth. *S · S*
+- [x] **85. De-dupe the idea docs.** `CONSCIOUSNESS_ENGINEERING_IDEAS.md` lives in both repo
+  root and `docs/` — one source of truth. *S · S* — **Shipped:** the root copy is
+  gone; `docs/CONSCIOUSNESS_ENGINEERING_IDEAS.md` is the only file. Broader
+  shipped-item reconcile across volumes remains SYSTEMIC #68.
 - [ ] **86. `.uid` hygiene.** Ensure every `.gd.uid` is committed/ignored consistently
   (Godot 4.4 artifacts; they're noise if half-tracked). *S · S*
 - [ ] **87. Extract shared utilities.** Clamp helpers, autoload access, tank-bounds math are
@@ -340,10 +344,13 @@ module count grow.*
   ledger; reusable carve-checklist template. Line numbers verified against HEAD.
 - [ ] **92. ADRs (architecture decision records).** Capture the big calls — offline-first
   LLM, GWT mind, save versioning, non-Meta policy — so the *why* survives. *M · M*
-- [ ] **93. An idea-doc series index.** 8+ volumes now; one doc mapping volume → shipped% →
-  files touched, so the backlog stays navigable. *S · M*
-- [ ] **94. Commit & own `AGENTS.md`.** It's currently untracked; commit it as the
-  authoritative contributor + agent contract (build / test / style / verify). *S · M*
+- [x] **93. An idea-doc series index.** [`docs/INDEX.md`](INDEX.md) maps volumes,
+  platform, releases, archive, adjacent repo docs, and operational facts;
+  per-doc checkboxes hold completion (no shipped% column). Optional follow-up:
+  auto-generated shipped% or “files touched” rollup. *S · M*
+- [x] **94. Commit & own `AGENTS.md`.** Tracked at repo root as the contributor +
+  agent contract (build / test / style / verify); pairs with
+  [`CONTRIBUTING.md`](../CONTRIBUTING.md) and [`docs/INDEX.md`](INDEX.md). *S · M*
 - [ ] **95. A module-ownership map.** Who/what owns each subsystem and its boundaries — the
   social contract that stops god-objects regrowing. *S · M*
 - [ ] **96. A 30-minute onboarding path.** "Run → change → verify" documented end-to-end
@@ -353,12 +360,13 @@ module count grow.*
   define the vocabulary so the codebase reads coherently across 30 modules. *S · M*
 - [ ] **98. Written, CI-enforced budgets.** ms/frame, mind RAM, save size, build size — as
   committed numbers, not aspirations. *S · M*
-- [ ] **99. A "definition of done" for sentience features.** Grounded · never-blocks ·
+- [x] **99. A "definition of done" for sentience features.** Grounded · never-blocks ·
   offline-degrades · tested · ablatable · documented — codify the discipline the docs
-  keep restating, so it's checked, not remembered. *S · M*
-- [ ] **100. The engineering creed, one page.** "Best-coded sim fish ever" = readable,
+  keep restating, so it's checked, not remembered. *S · M* — **Shipped:**
+  [`ENGINEERING_CREED.md`](ENGINEERING_CREED.md) (SYSTEMIC #78).
+- [x] **100. The engineering creed, one page.** "Best-coded sim fish ever" = readable,
   typed, tested, fast, decomposed — *in service of a felt mind.* Every PR measured
-  against it. *S · L*
+  against it. *S · L* — **Shipped:** [`ENGINEERING_CREED.md`](ENGINEERING_CREED.md).
 
 ---
 

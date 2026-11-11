@@ -2,6 +2,7 @@
 
 > **Status: data-design reference — not yet consumed by the game.** See
 > [docs/adr/002-data-schemas-reference.md](../docs/adr/002-data-schemas-reference.md).
+> Doc map: [docs/INDEX.md](../docs/INDEX.md).
 > The shipping
 > Godot game defines species/substrate data in GDScript (`tank_config.gd`'s
 > `SPECIES_LIBRARY`, `species_library.gd`). These schemas + examples document the

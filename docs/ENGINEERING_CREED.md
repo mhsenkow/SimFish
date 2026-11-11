@@ -23,9 +23,9 @@ Do **not** use `smoke_runner.gd` for unattended runs — it has no timeout
 (AGENTS.md). Single-script debug:
 `./scripts/godot.sh --headless --path shaders-godot/godot-project --script res://scripts/smoke_<name>.gd`.
 
-Operational facts (version, scenario count, autoload count, render defaults)
-are reconciled in README / `ARCHITECTURE.md` / style guide from
-`project.godot` + `scenario_picker.gd` (Holistic #014).
+Operational facts (version, scenario count, autoload count, render defaults,
+script counts) live in [`docs/INDEX.md`](INDEX.md) “Operational facts” and
+must match `project.godot` + `scenario_picker.gd` (Holistic #014).
 
 ## Ablatable
 
@@ -33,4 +33,7 @@ Features toggle via `TankConfig` / Settings without ripping code out. Battery sa
 
 ## Documented
 
-Shipped idea-doc items flip `- [x]`. ADRs capture big forks (`docs/adr/`). Non-normative code (`sim-rust/`, `data-schemas/`) says so in README.
+Shipped idea-doc items flip `- [x]`. Releases: [`CHANGELOG.md`](../CHANGELOG.md).
+Backlog map: [`docs/INDEX.md`](INDEX.md). ADRs: `docs/adr/`. Historical pass notes:
+`docs/archive/passes/` only — do not start new work there. Non-normative code
+(`sim-rust/`, `data-schemas/`) says so in README.

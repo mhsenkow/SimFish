@@ -1,6 +1,8 @@
 # walstad loom — Steamworks
 
 > **Internal dev doc** — depot upload, GodotSteam, store asset generation. Not linked from the public landing page; players use the [Steam store](https://store.steampowered.com/app/4796460/).
+> Short pointer: [README.md](README.md). Doc map: [docs/INDEX.md](../docs/INDEX.md)
+> (platform / store section).
 
 App ID **4796460** · Store name **walstad loom**
 

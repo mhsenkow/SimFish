@@ -3,19 +3,24 @@
 *Drafted 2026-06-28 (ENGINEERING #91 / OPUS_HANDOFF Tier 0A). The map that must
 exist **before** any god-object decomposition. Wrong map → wrong extraction.*
 
+**Companion:** clocks / state / RNG → [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+Doc map → [`INDEX.md`](INDEX.md).
+
 This is a map a principal engineer can trust, not a folder listing. It answers
 the two acceptance questions up front, then gives per-god-object ownership,
 public surfaces, verified carve slices (with line numbers as navigational
 hints — **follow the symbol, line numbers drift**), the dependency-ordered carve
 plan, the import rules that keep cycles out, and a copy-paste carve checklist.
 
-> **Scope.** Four god-objects = ~32.9k LOC = a third of the codebase:
-> [`main.gd`](../shaders-godot/godot-project/scripts/main.gd) (9,428),
-> [`world.gd`](../shaders-godot/godot-project/scripts/world.gd) (8,713),
-> [`fish.gd`](../shaders-godot/godot-project/scripts/fish.gd) (8,467),
-> [`sim_driver.gd`](../shaders-godot/godot-project/scripts/sim_driver.gd) (6,281).
-> The **mind subsystem** (~30 small modules) is already decomposed — it is the
-> *destination pattern*, not a carve target.
+> **Scope.** Four god-objects still hold a large slice of the tree. Line
+> counts as of 2026-11-10 (v0.2.53): **~45k LOC** —
+> [`main.gd`](../shaders-godot/godot-project/scripts/main.gd) (13,794),
+> [`world.gd`](../shaders-godot/godot-project/scripts/world.gd) (12,246),
+> [`fish.gd`](../shaders-godot/godot-project/scripts/fish.gd) (11,314),
+> [`sim_driver.gd`](../shaders-godot/godot-project/scripts/sim_driver.gd) (7,601).
+> Heading anchors such as `{#maingd-9428}` are historical; **follow the
+> symbol, not the number.** The **mind subsystem** (~30 small modules) is
+> already decomposed — it is the *destination pattern*, not a carve target.
 
 ---
 

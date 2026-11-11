@@ -744,7 +744,7 @@ specious present (`fish_felt_now.gd:34-71`) and relief/dread against a slow
 baseline (`fish_qualia.gd:49-54`). Neither the fish nor the tank knows
 whether the water was better *yesterday*.
 
-- [ ] **251. History rings for every vital.** (S·L) `TankVitals` (#301) keeps a ring per variable: 1 sample per sim-minute for 24 sim-hours, plus 1 per sim-hour for 14 sim-days. It stores short and long slopes, bounded and saved. This is the memory that trend awareness needs. Today there is a smoothed `stability` and a crash count (`sim_driver.gd:1486-1503`), and nothing else.
+- [x] **251. History rings for every vital.** (S·L) `TankVitals` (#301) keeps a ring per variable: 1 sample per sim-minute for 24 sim-hours, plus 1 per sim-hour for 14 sim-days. It stores short and long slopes, bounded and saved. This is the memory that trend awareness needs. Today there is a smoothed `stability` and a crash count (`sim_driver.gd:1486-1503`), and nothing else.
 - [ ] **252. "It's getting worse" is an event.** (S·L) A trend detector fires when a slope stays past its threshold for N samples. It emits `MotionEvents` `worsening` (#354), a tank bid, and a fish bid scaled by sensitivity. Fish and tank react to the *direction* of change, which is how real organisms are wired.
 - [ ] **253. A forecast for tonight.** (M·L) A lite autoregressive forecast of dawn O₂ from the evening O₂, plant biomass and stocking, which captures the pre-dawn trough. When it predicts a thin night:
   - sensitive fish rest earlier
@@ -832,7 +832,7 @@ and the audio vitality (`ambient_audio.gd:874-883`). TankMind ignores
 ammonia and nitrite directly. A mind cannot know itself through four
 disagreeing instruments.
 
-- [ ] **301. `tank_vitals.gd`: one tank self-model.** (M·L) A single owner computes every vital, its normal, its deviation, its trend (#251), its forecast (#253) and its confidence (#290). The four existing computations become readers of it, and a lint smoke forbids new direct chemistry→stress formulas outside it. This is Lever 2's hinge: everything in Part Two that says "the tank" reads `TankVitals.snapshot()`.
+- [x] **301. `tank_vitals.gd`: one tank self-model.** (Owner + rings + snapshot + save/load shipped; `stability` now reads `TankVitals.stability_instant`. The other three readers — KeeperCare.mood_score, ColonyMind.water_stress, AmbientAudio vitality — and the lint smoke remain follow-up.) (M·L) A single owner computes every vital, its normal, its deviation, its trend (#251), its forecast (#253) and its confidence (#290). The four existing computations become readers of it, and a lint smoke forbids new direct chemistry→stress formulas outside it. This is Lever 2's hinge: everything in Part Two that says "the tank" reads `TankVitals.snapshot()`.
 - [ ] **302. Vitals grouped as a body.** (S·L) Organize the vitals as organs:
   - **Breath**: O₂, CO₂.
   - **Blood**: toxic NH₃, nitrite, nitrate. The water is the tank's blood.

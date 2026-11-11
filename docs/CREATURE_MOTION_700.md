@@ -50,8 +50,8 @@ water does:
   (stub).
 - [LIVING_MOTION_IDEAS.md](LIVING_MOTION_IDEAS.md): topological schooling and
   propagation.
-- [LIVING_LOCOMOTION_20261008.md](LIVING_LOCOMOTION_20261008.md) and
-  [SWIMMING_MOTION_PASS_20261007.md](SWIMMING_MOTION_PASS_20261007.md): pass
+- [LIVING_LOCOMOTION_20261008.md](archive/passes/LIVING_LOCOMOTION_20261008.md) and
+  [SWIMMING_MOTION_PASS_20261007.md](archive/passes/SWIMMING_MOTION_PASS_20261007.md): pass
   reports.
 
 Where an idea here touches shipped work, it builds on it and says so.
@@ -3018,9 +3018,9 @@ set to the beat, not a different animal.
 ## AD. Performance: realism on a budget (693–700)
 
 A rendered 197-fish tank ran at about 3 FPS in the crowded-fish pass
-([CROWDED_FISH_PERFORMANCE_20261008.md](CROWDED_FISH_PERFORMANCE_20261008.md)),
+([CROWDED_FISH_PERFORMANCE_20261008.md](archive/passes/CROWDED_FISH_PERFORMANCE_20261008.md)),
 and bone sync for 400 bones costs about 9.6 ms
-([RENDER_SCHOOLING_PERFORMANCE_20261009.md](RENDER_SCHOOLING_PERFORMANCE_20261009.md)).
+([RENDER_SCHOOLING_PERFORMANCE_20261009.md](archive/passes/RENDER_SCHOOLING_PERFORMANCE_20261009.md)).
 Everything in this backlog has to fit under that.
 
 - [ ] **693. Batch the spine math.** Compute spine and chain angles per species

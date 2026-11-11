@@ -1,7 +1,8 @@
 # Repo orientation
 
 Quick map so you don't have to rediscover the layout. Fuller detail lives in
-[README.md](README.md).
+[README.md](README.md). The full documentation map is [docs/INDEX.md](docs/INDEX.md)
+(idea backlogs, Holistic plans, releases, archived pass notes).
 
 ## Naming (one project, three names)
 
@@ -16,7 +17,7 @@ All the same project.
 | Path | What it is |
 |---|---|
 | `shaders-godot/godot-project/` | **The actual game.** Open this in Godot 4.6+. Main scene: `tank_menu.tscn`. |
-| `shaders-godot/godot-project/scripts/` | ~405 GDScript files, ~155 of them `smoke_*` tests (subsystem breakdown in README). |
+| `shaders-godot/godot-project/scripts/` | ~642 GDScript files, ~295 of them `smoke_*` tests (counts in [docs/INDEX.md](docs/INDEX.md); subsystem breakdown in README). |
 | `shaders-godot/godot-project/shaders/` | Render pipeline (palette quantize + voxel/water/glass/etc). |
 | `shaders-godot/godot-project/dev/` | Headless capture scenes (`capture.tscn`, `capture_pass.*`) — dev-only, not part of the game. |
 | `shaders-godot/make_palette.py` | Palette PNG generator. |
@@ -25,7 +26,7 @@ All the same project.
 | `steam/` | Steamworks depots, upload scripts, store copy. `depot_ids.env` is local-only. |
 | `steam/store/` | Capsule/screenshot generator (`generate_assets.py`, needs `.venv`). |
 | `marketing/` | Capsule art + gameplay screenshots + logos. `marketing/sources/` holds raw reference grabs. |
-| `docs/` | GitHub Pages landing (`index.html`/`style.css`/`fonts`/`img`) + `GOALS.md` backlog. |
+| `docs/` | GitHub Pages landing + [docs/INDEX.md](docs/INDEX.md) (full doc map + operational facts), `GOALS.md`, idea backlogs, `archive/passes/` (historical). |
 | `tools/render_preview.py` | Standalone Python pixel-art preview generator (writes to repo-root `output/`). |
 | `style-guide/` | Palette + pixel/dither rules. |
 | `output/` | Scratch render output — git-ignored, regenerated on demand. |
@@ -179,6 +180,6 @@ cd shaders-godot/godot-project && ../../scripts/godot.sh --path . tank_menu.tscn
 # Regenerate the pixel-art preview art
 python3 tools/render_preview.py
 
-# Tag a release (CI builds mac/win/linux)
-git tag v0.1.67 && git push origin v0.1.67
+# Tag a release (CI builds mac/win/linux/android)
+git tag v0.2.53 && git push origin v0.2.53
 ```

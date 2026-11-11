@@ -3,8 +3,69 @@
 All notable releases of **walstad loom** (GitHub: [SimFish](https://github.com/mhsenkow/SimFish/releases)).
 
 Format: version → highlights. For full diffs, see git tags and GitHub release notes.
+Per-version stubs (GitHub Pages): `docs/RELEASE_v0.2.*.md` → anchors below.
+Historical pass measurements: `docs/archive/passes/`.
 
 ## Unreleased
+
+## v0.2.53
+
+- **Smoke suite:** seven regressions since v0.2.38 fixed; GDScript analyzer warnings cleared (zero warnings).
+- **Fish mesh / CPU:** tails stay on the body; heads stay square; behaviour restored after the v0.2.50 store build with fish/snail CPU cut for crowded tanks.
+- **Mind and felt water:** Mind panel binds through `MindState`; live fish get felt oxygen; voice cooldown no longer freezes when AI is off; dawn latch and spark expression restored.
+- **Desktop camera:** NaN guards; review demo path hardened.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.53) (macOS / Windows / Linux / Android). Stub: [docs/RELEASE_v0.2.53.md](docs/RELEASE_v0.2.53.md).
+
+## v0.2.52
+
+- **Creature motion (phases 0–3):** one stroke clock with travelling-wave body bend; anticipation/follow-through; pose library and timing curves; invertebrate pedal/antenna motion.
+- **Crowded-tank GPU skinning:** bone-palette skinning (~14× fauna sync cut on the measured probe); legacy CPU path retained for A/B.
+- **Store:** Steam capsule refresh; Android Play notes under `docs/ANDROID_PLAY.md`.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.52). Stub: [docs/RELEASE_v0.2.52.md](docs/RELEASE_v0.2.52.md).
+
+## v0.2.51
+
+- **Incompressible fluid current** on a worker thread drives plants, bubbles, food, and fish station-keeping.
+- **Tank lights its room:** room dims around a lit tank; Tank glow slider; milky multi-glass veil removed.
+- **Depth / surface:** haze builds with water column; underside mirror; topside room reflection.
+- **Established look:** planted stands, spindle fish profiles, mulm/biofilm on hardscape, gravel-over-soil at the glass, stacked live rock on reef templates.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.51). Stub: [docs/RELEASE_v0.2.51.md](docs/RELEASE_v0.2.51.md).
+
+## v0.2.50
+
+- **Long-run ecology:** soil deposits survive terrain re-sync; algae follows the lamp; dead clumps return litter; births/succession respect carrying capacity.
+- **Quieter first night:** shrimp skip full tank-mind snapshots; mind cadence stretches under population pressure; intro dialogs share one FIFO queue.
+- **Silhouette polish:** stepped muzzle, denser tail pigment, shared foliage lighting include.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.50). Stub: [docs/RELEASE_v0.2.50.md](docs/RELEASE_v0.2.50.md).
+
+## v0.2.41
+
+- **No black bars:** viewport fills non-16:9 desktops (taller/wider room framing).
+- Carries drawn nav icons from v0.2.40 for iPad/iPhone.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.41). Stub: [docs/RELEASE_v0.2.41.md](docs/RELEASE_v0.2.41.md).
+
+## v0.2.40
+
+- **Drawn nav icons:** 12×12 nearest-pixel icons for rail and touch cluster (IBM Plex lacked gear/corners symbols on iPad).
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.40). Stub: [docs/RELEASE_v0.2.40.md](docs/RELEASE_v0.2.40.md).
+
+## v0.2.39
+
+- **Color and light:** planted palette / day-night LUTs / runtime banks agree; gentler fixture wash; shared analytic beam cones.
+- **Living habitats and locomotion:** foliage shelters, grazer/snail plant recovery, continuous species-aware locomotion.
+- **Performance and retention:** school merges, instance-upload guards, long-session fauna/material reclaim, mind/tending handoffs.
+- Pass notes: [archive/passes/](docs/archive/passes/). Stub: [docs/RELEASE_v0.2.39.md](docs/RELEASE_v0.2.39.md).
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.39).
+
+## v0.2.38
+
+- **+ Living tank** starts a populated Quick Garden with automatic feeding and gentle lo-fi defaults.
+- **Softer sound / individual life:** filtered hats, musical associations, smoother swim bouts.
+- **Reproduction and restore:** seed subclass recovery, coral tip colors, seedling floor height, plant-limit germination.
+- **Shelf photos and sheen:** palette-correct shelf captures; stable fish highlights; atomic save workers.
+- **Performance microbenchmarks** for music reads, plant queries, chemical totals, neighbour scans; smoke suite green with empty known-failure file.
+- Pass notes: [archive/passes/](docs/archive/passes/). Stub: [docs/RELEASE_v0.2.38.md](docs/RELEASE_v0.2.38.md).
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.38).
 
 ## v0.2.37
 

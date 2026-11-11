@@ -2,7 +2,7 @@
 
 The [1,000-item review](HOLISTIC_IMPROVEMENTS_1000.md) is the roadmap. This ledger records concrete implementation and evidence from the first pass on 2026-10-07. It does **not** mark all 1,000 proposals complete. Existing working-copy improvements were preserved; the entries below describe this pass's additions.
 
-**Save recovery unresolved:** An existing scenario smoke deleted slot 13's current and previous state during the first full run because the old isolation launcher was ineffective. The launcher and test are repaired; no exact backup has been found. See [the incident report](DEV_SAVE_ISOLATION_INCIDENT_20261007.md).
+**Save recovery unresolved:** An existing scenario smoke deleted slot 13's current and previous state during the first full run because the old isolation launcher was ineffective. The launcher and test are repaired; no exact backup has been found. See [the incident report](archive/passes/DEV_SAVE_ISOLATION_INCIDENT_20261007.md).
 
 ## Fish movement and appearance
 
@@ -66,7 +66,7 @@ The populated front capture preserves root placement and room geometry. Its comp
 
 ## Save incident
 
-The first full regression run deleted the current and previous state of slot 13, “Iwagumi Stone Garden,” through an existing destructive scenario smoke and ineffective override-based isolation. Recovery is **unresolved**. Configuration/metadata and other tank file content survived. The launcher, scenario smoke, and incompatible-save retention have been corrected. See [the incident report](DEV_SAVE_ISOLATION_INCIDENT_20261007.md) for exact evidence, hashes, recovery status, and safeguards. Later unchanged inventories do not undo this loss.
+The first full regression run deleted the current and previous state of slot 13, “Iwagumi Stone Garden,” through an existing destructive scenario smoke and ineffective override-based isolation. Recovery is **unresolved**. Configuration/metadata and other tank file content survived. The launcher, scenario smoke, and incompatible-save retention have been corrected. See [the incident report](archive/passes/DEV_SAVE_ISOLATION_INCIDENT_20261007.md) for exact evidence, hashes, recovery status, and safeguards. Later unchanged inventories do not undo this loss.
 
 ## Verification results
 
@@ -81,6 +81,6 @@ The first full regression run deleted the current and previous state of slot 13,
 
 ### Follow-up: planting and performance bugs
 
-The subsequent bug pass fixes manual epiphyte placement and reports missing hardscape in the creator/library UI instead of warning and silently changing the plant. It also adds an open-water travel fast path and removes unused cognition snapshot copies while preserving detached history. The complete follow-up suite passed 220 scripts with the same three known failures and no timeouts. A clean rendered timing pair showed 133.10 → 130.62 ms median with unchanged p95; this does not establish a substantial overall speedup. See [the bug/performance pass](BUGFIX_PERFORMANCE_PASS_20261007.md) for implementation and measurement details.
+The subsequent bug pass fixes manual epiphyte placement and reports missing hardscape in the creator/library UI instead of warning and silently changing the plant. It also adds an open-water travel fast path and removes unused cognition snapshot copies while preserving detached history. The complete follow-up suite passed 220 scripts with the same three known failures and no timeouts. A clean rendered timing pair showed 133.10 → 130.62 ms median with unchanged p95; this does not establish a substantial overall speedup. See [the bug/performance pass](archive/passes/BUGFIX_PERFORMANCE_PASS_20261007.md) for implementation and measurement details.
 
 The unlisted proposals remain unimplemented or only previously present in the application. Important follow-through includes profiling and reducing cognition copies without losing memory; clear swim corridors and less competing visual noise; species-specific fin contours; offspring-to-parent continuity across every reproductive path; shared light/ecological time contracts; and measured low-end/exported-build performance. The next pass should use measured player benefit and cost rather than expanding all 1,000 ideas simultaneously.

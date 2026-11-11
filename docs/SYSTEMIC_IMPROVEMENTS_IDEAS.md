@@ -16,7 +16,7 @@ platitude.
 **The honest baseline (measured 2026-06-28).** This is a mature, disciplined
 codebase — ~99k LOC of GDScript, 24 shaders, a release pipeline that ships to 3
 desktop platforms + Steam, an in-process LLM, 7 autoloads, and a freshly-landed PR
-smoke gate. The gaps are not sloppiness; they're the predictable edges of a fast-
+smoke gate. Current operational facts live in [`docs/INDEX.md`](INDEX.md). The gaps are not sloppiness; they're the predictable edges of a fast-
 moving solo/AI-paired project: **untrusted inputs reach the LLM and the save loader
 without a guard, the non-Godot code (Rust sim, Python tooling, data-schemas) has
 drifted toward rot, the build relies on fragile shell scripts and uncached 250MB
@@ -41,8 +41,9 @@ from a 2026-06-28 read — verify before acting.
 3. **Harden the release machine.** A 250MB model re-downloads every CI run uncached,
    shell scripts broke macOS CI last week, and nothing checksums what it downloads.
    Sections A, I.
-4. **Make the docs navigable, not just deep.** 22 idea docs, no index, no
-   CONTRIBUTING, no CHANGELOG, no glossary surfaced in-game. Section K.
+4. **Make the docs navigable, not just deep.** Idea-doc map (`docs/INDEX.md`),
+   CONTRIBUTING, and CHANGELOG now exist; glossary still not surfaced in-game.
+   Section K.
 5. **Give the pipeline a "look better" and an "everyone can play" pass.** Cheap
    shader wins (dither-crawl lock, living water surface, alive scales) and the
    missing accessibility floor (reduced-motion, font scale, remap, captions).
@@ -275,6 +276,8 @@ that has drifted from the GDScript truth. Ambiguity is the cost — resolve it.*
 - [ ] **68. De-dupe the idea docs + reconcile shipped items.** Some idea docs list features
   already shipped (e.g., colorblind palettes are live in `render_panel.gd`); check items off
   and ensure no doc lives in two places. (Mirrors ENGINEERING #85.) *S · S*
+  — **Partial:** the duplicate `CONSCIOUSNESS_ENGINEERING_IDEAS.md` at repo root
+  is gone (ENGINEERING #85). Cross-volume shipped-item reconcile still open.
 
 ## Section K — Documentation & knowledge
 
@@ -282,9 +285,9 @@ that has drifted from the GDScript truth. Ambiguity is the cost — resolve it.*
 
 - [x] **69. `CONTRIBUTING.md`.** Setup (Godot 4.6.3, cmake on macOS, Python), the smoke-test
   command, the strangler-fig carve rule, commit/PR conventions. The missing front door. *M · M*
-- [x] **70. `docs/INDEX.md` mapping the 22 idea docs.** Category → file → shipped% so the
-  backlog is navigable; today there's no map. (Pairs with the idea-doc-series index,
-  ENGINEERING #93.) *S · M*
+- [x] **70. `docs/INDEX.md` mapping the idea docs.** Category → file so the backlog is
+  navigable (now lists pillars, mega campaigns, platform, releases, and archive; completion
+  stays in each doc’s checkboxes — no shipped% column). Pairs with ENGINEERING #93. *S · M*
 - [x] **71. `CHANGELOG.md`.** Version → shipped features, generated where possible (#61).
   Users + future-you currently reconstruct this from git. *S · M*
 - [ ] **72. `ARCHITECTURE_MIND.md`.** Map the ~30 mind modules — phase, I/O, data flow; the
@@ -374,7 +377,8 @@ missing. This is both an ethics floor and a market expander.*
 
 ## Section O — Web landing & marketing surface
 
-- [ ] **98. Auto-update the landing version pill.** `docs/index.html` hardcodes `v0.2.22`; a
+- [ ] **98. Auto-update the landing version pill.** `docs/index.html` still
+  hardcodes the version (currently `v0.2.53`, kept in sync by hand); a
   small Actions job (or client fetch of the GitHub Releases API) keeps it current. *S · S*
 - [ ] **99. Add SEO + structured data.** Missing `keywords`/`author` meta and a JSON-LD
   `SoftwareApplication`/`VideoGame` schema with per-platform download URLs for richer social

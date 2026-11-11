@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="walstad loom"
-config/description="Generative pixel-art Walstad aquarium. 3D voxel content rendered through palette-quantized 512x288 SubViewport."
+config/description="Generative pixel-art Walstad aquarium. 3D voxel content rendered through a palette-quantized SubViewport."
 config/version="0.2.53"
 run/main_scene="res://tank_menu.tscn"
 config/features=PackedStringArray("4.6", "Mobile")

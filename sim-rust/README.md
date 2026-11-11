@@ -1,7 +1,9 @@
 # vivarium-sim
 
 > **Status: reference prototype — not wired into the game.** See
-> [docs/adr/001-sim-rust-reference.md](../docs/adr/001-sim-rust-reference.md).
+> [docs/adr/001-sim-rust-reference.md](../docs/adr/001-sim-rust-reference.md)
+> and [docs/adr/003-sim-rust-as-oracle.md](../docs/adr/003-sim-rust-as-oracle.md).
+> Doc map: [docs/INDEX.md](../docs/INDEX.md).
 > The shipping game
 > (`shaders-godot/godot-project/`) runs its chemistry in GDScript
 > (`water_chemistry.gd`, `substrate_grid.gd`). This Rust crate is a standalone,

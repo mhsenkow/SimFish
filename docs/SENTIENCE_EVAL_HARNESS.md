@@ -105,7 +105,8 @@ Design rules (non-negotiable, they're what make it *trustworthy*):
   pass — not a single function. They assert the *emergent* outcome.
 - **Falsifiable, not binary.** Each Result carries the *measured number* (Φ went
   0.71→0.34; caution in X was 3.1× the control). A scorecard you can argue with.
-- **Headless + CI-able.** Runs under `smoke_runner.gd`; gates risky mind PRs.
+- **Headless + CI-able.** Runs via `scripts/run_smokes.sh` (`smoke_mind_eval.gd`);
+  gates risky mind PRs.
 - **Reuses, doesn't duplicate.** The existing smokes are proto-invariants; the
   harness generalises them into a scored, theory-tagged suite.
 
@@ -120,8 +121,8 @@ the real mind modules. Reference implementations that landed first: **D1**, **S2
 **T1**, **G1**. Cursor filled in: **L1**, **L2**, **S1**, **A1**, **I1**, **M1**,
 **F1**, **C1**, **H**.
 
-`smoke_mind_eval.gd` is picked up automatically by `smoke_runner.gd` and fails CI
-if any required invariant fails or the honesty gate fails.
+`smoke_mind_eval.gd` is picked up by `scripts/run_smokes.sh` and fails CI if any
+required invariant fails or the honesty gate fails.
 
 **Adding an invariant** = append `{id, theory, required, fn}` to `MindEval.invariants()`;
 `fn` returns `{passed: bool, measured: String}`. When an invariant can't yet pass,

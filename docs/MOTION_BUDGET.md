@@ -3,9 +3,9 @@
 *Drafted 2026-10-30 for [CREATURE_MOTION_700.md](CREATURE_MOTION_700.md) #79.
 Targets come from the backlog (#693) or are marked as proposals. Measured
 numbers come from
-[CROWDED_FISH_PERFORMANCE_20261008.md](CROWDED_FISH_PERFORMANCE_20261008.md)
+[CROWDED_FISH_PERFORMANCE_20261008.md](archive/passes/CROWDED_FISH_PERFORMANCE_20261008.md)
 and
-[RENDER_SCHOOLING_PERFORMANCE_20261009.md](RENDER_SCHOOLING_PERFORMANCE_20261009.md)
+[RENDER_SCHOOLING_PERFORMANCE_20261009.md](archive/passes/RENDER_SCHOOLING_PERFORMANCE_20261009.md)
 (Apple M2 Ultra, Godot 4.6.2). Code anchors are from `5ad6dd3`.*
 
 Every motion item in the backlog has to fit in a frame that is already

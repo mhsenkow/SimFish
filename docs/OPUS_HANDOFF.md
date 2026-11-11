@@ -15,13 +15,13 @@ architecture review, multi-week scope, or native/GPU work. Bounce these to
 
 ## Tier 0 — Map + gate before touching god-objects
 
-| ID | Doc | Item | Why Opus |
-|----|-----|------|----------|
-| 91 | ENGINEERING | `ARCHITECTURE.md` module map | Required before any 33k-LOC carve; wrong map = wrong extraction |
-| 1–4 | ENGINEERING | Decompose `fish.gd`, `main.gd`, `world.gd`, `sim_driver.gd` | XL strangler-fig; needs map + smoke pins per slice |
-| 14–15 | ENGINEERING | `MindState` as sole mind↔fish channel | Touches 4k+ dynamic `.get()` calls; phased migration |
+| ID | Doc | Item | Why Opus | Status |
+|----|-----|------|----------|--------|
+| 91 | ENGINEERING | `ARCHITECTURE.md` module map | Required before any 33k-LOC carve; wrong map = wrong extraction | **Shipped** 2026-06-28 — see [ARCHITECTURE.md](ARCHITECTURE.md) |
+| 1–4 | ENGINEERING | Decompose `fish.gd`, `main.gd`, `world.gd`, `sim_driver.gd` | XL strangler-fig; needs map + smoke pins per slice | In progress — see [OPUS_HANDOFF_DETAILED.md](OPUS_HANDOFF_DETAILED.md) |
+| 14–15 | ENGINEERING | `MindState` as sole mind↔fish channel | Touches 4k+ dynamic `.get()` calls; phased migration | Partial — see detailed ledger |
 
-**Opus prompt seed:** *"Read ENGINEERING §A, write ARCHITECTURE.md with module boundaries, public surfaces, and carve order. Then extract `CameraController` from main.gd behind smokes."*
+**Opus prompt seed:** *"Read `docs/ARCHITECTURE.md` and ENGINEERING §A. Continue the next open carve slice in OPUS_HANDOFF_DETAILED (not 0A). Extract behind `scripts/run_smokes.sh`."*
 
 ---
 
@@ -103,15 +103,17 @@ Low-risk, high-ROI picks for Composer/Auto:
 - META #66 profiler scope labels in sim_driver subsystems
 - META #67 golden-trace expansion (more mind scenarios)
 - ENGINEERING #6 file-size CI budget
-- Doc checkoffs + `docs/INDEX.md` percentage refresh
+- Doc checkoffs (INDEX map maintained; shipped% column intentionally omitted)
 
 ---
 
 ## Verification checklist for any Opus session
 
 ```bash
+bash scripts/run_smokes.sh
+# or a single smoke:
 ./scripts/godot.sh --headless --path shaders-godot/godot-project \
-  --script res://scripts/smoke_runner.gd
+  --script res://scripts/smoke_tank_shapes.gd
 ```
 
-Add a targeted smoke for every behavioral change. Mark items `[x]` in the source idea doc with a one-line shipped note.
+Add a targeted smoke for every behavioral change. Mark items `[x]` in the source idea doc with a one-line shipped note. Do not use `smoke_runner.gd` as the suite entrypoint.
