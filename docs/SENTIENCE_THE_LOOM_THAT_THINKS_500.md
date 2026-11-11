@@ -221,7 +221,7 @@ made it.
 - [ ] **19. Gain by presence on screen.** (S·S) Until full spatial audio lands (#51), scale every voice by the speaker's on-screen pixel size and distance from the view centre, using the same pan law the eat and startle notes already use (`ambient_audio.gd:400-404`).
 - [ ] **20. Overheard chatter sounds like speech, far away.** (S·S) Chatter between fish plays generic bloops (`main.gd:5518-5520`). Use each speaker's real babble at −9 dB with a low-pass, so the player can tell two fish are talking without reading a word.
 - [ ] **21. `smoke_voice_paths.gd`.** (S·M) Drive every speech path: thought, reply, follow-up, Guardian, tank, question, chatter, colony and model upgrade. Assert each yields exactly one text record and exactly one vocal act, and nothing ever leaves the cooldown stuck. This is the regression net under #1, #4 and #5.
-- [ ] **22. One `Utterance` record: the foundation of Part One.** (M·L) Add `utterance.gd` (`class_name Utterance`, RefCounted). Its fields:
+- [x] **22. One `Utterance` record: the foundation of Part One.** (M·L) Add `utterance.gd` (`class_name Utterance`, RefCounted). Its fields:
   - Identity: `id`, `speaker_id`, `speaker_kind` (fish/tank/colony/guardian).
   - Act: `act` (call/murmur/babble/line/breath), `intent` (alarm, food, contact, greet, reply…).
   - Content: `text` (optional), `felt` (snapshot of valence, arousal, stress, fatigue and confidence from `fish_core_affect` / `mind_self_model`).

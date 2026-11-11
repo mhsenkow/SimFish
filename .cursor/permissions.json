@@ -1,0 +1,16 @@
+{
+  "autoRun": {
+    "allow_instructions": [
+      "Allow headless Godot via ./scripts/godot.sh, including smoke scripts under scripts/smoke_*.gd and scripts/run_smokes.sh.",
+      "Allow isolated game runs via ./scripts/dev_run.sh and GODOT_ISOLATE=1 wrappers.",
+      "Allow compile/warning checks: ./scripts/check_warnings.sh and headless --script res://dev/compile_check.gd.",
+      "Allow read-only probes that use isolated userdata and do not write the real tanks inventory."
+    ],
+    "block_instructions": [
+      "Any command that writes under Godot app_userdata, especially Library/Application Support/Godot/app_userdata/walstad loom/tanks, must ask first.",
+      "Running dev/capture.tscn, visual_capture, or inspect without scripts/dev_run.sh / GODOT_ISOLATE=1 must ask first — those paths can mutate real save slots.",
+      "Destructive rm -rf outside .scratch/, build/, output/, or .smoke-logs/ must ask first.",
+      "Commands that clear, restore, or overwrite tank save state without an explicit user request must ask first."
+    ]
+  }
+}

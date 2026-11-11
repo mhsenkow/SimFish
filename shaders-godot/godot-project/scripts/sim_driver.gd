@@ -50,6 +50,7 @@ const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 const _PlantFarFoliageBatchScript = preload("res://scripts/plant_far_foliage_batch.gd")
 const FoodWebTraceScript = preload("res://scripts/food_web_trace.gd")
 const _TankIlluminationScript = preload("res://scripts/tank_illumination.gd")
+const UtteranceScript = preload("res://scripts/utterance.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -506,8 +507,22 @@ func _on_fish_thought_ready(fish_id: String, line: String, _source: String) -> v
 	for f in fish:
 		if is_instance_valid(f) and String(f.id) == fish_id:
 			f.set_current_thought(line)
+			_emit_fish_utterance(f, line, UtteranceScript.INTENT_THOUGHT)
 			emit_signal("fish_thought_spoke", f, line)
 			return
+
+
+# LOOM #22: build the one Utterance record for a fish speaking and emit it on
+# the motion bus, so audio/pose/text/journal/neighbours all read one shape.
+# The fish_thought_spoke signal stays for compatibility (#23 is a later item).
+func _emit_fish_utterance(f: Fish, line: String, intent: StringName,
+		addressee: String = "") -> void:
+	if f == null or not is_instance_valid(f) or line.strip_edges() == "":
+		return
+	var act: StringName = UtteranceScript.ACT_BABBLE if addressee != "" \
+			else UtteranceScript.ACT_LINE
+	var u = UtteranceScript.for_fish(f, line, act, intent, addressee)
+	u.emit(self)
 
 
 func request_creature_thought(creature: Node, situation: String = "inspect") -> String:
@@ -527,6 +542,7 @@ func request_keeper_reply(f: Fish, result: Dictionary) -> String:
 	var away_first: String = MindConversation.consume_away_message(f)
 	if away_first != "" and bool(result.get("ok", true)):
 		MindConversation.note_reply(f, away_first, self)
+		_emit_fish_utterance(f, away_first, UtteranceScript.INTENT_GREET, String(f.id))
 		emit_signal("fish_thought_spoke", f, away_first)
 		return away_first
 	if bool(result.get("too_wary", false)):
@@ -544,6 +560,7 @@ func request_keeper_reply(f: Fish, result: Dictionary) -> String:
 		return ""
 	line = MindConversation.shape_keeper_reply(f, line, str(result.get("text", "")))
 	MindConversation.note_reply(f, line, self)
+	_emit_fish_utterance(f, line, UtteranceScript.INTENT_REPLY, String(f.id))
 	emit_signal("fish_thought_spoke", f, line)
 	return line
 
@@ -552,8 +569,12 @@ func speak_creature_thought(f: Fish, situation: String) -> String:
 	var line: String = String(request_creature_thought(f, situation)).strip_edges()
 	if line == "" or line == "…":
 		return ""
-	if situation.begins_with("keeper_"):
+	var is_keeper: bool = situation.begins_with("keeper_")
+	if is_keeper:
 		MindConversation.note_reply(f, line, self)
+	_emit_fish_utterance(f, line,
+			UtteranceScript.INTENT_REPLY if is_keeper else UtteranceScript.INTENT_THOUGHT,
+			String(f.id) if is_keeper else "")
 	emit_signal("fish_thought_spoke", f, line)
 	return line
 
