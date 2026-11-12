@@ -64,7 +64,7 @@ Local Play uploads flip the Android preset to Gradle AAB
 `export_path=../../build/WalstadLoom.aab`) with the upload keystore.
 **Do not commit that flip** — CI ships the sideload APK
 (`use_gradle_build=false`, `export_format=0`) for GitHub Releases.
-Current store track: `version/name=0.2.53`, `version/code=66`.
+Current store track: `version/name=0.2.54`, `version/code=67`.
 
 ## Play Console status (2026-10-28)
 

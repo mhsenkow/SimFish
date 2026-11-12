@@ -372,13 +372,15 @@ missing. This is both an ethics floor and a market expander.*
   plant growth but buried with fauna-behavior sliders; promote them. *S · M*
 - [ ] **96. Tooltips that teach, not just label.** Many sliders affect the sim in non-obvious
   ways; a one-line "what this does to your tank" per control. *M · M*
-- [ ] **97. Consistent keyboard-shortcut hints in panel titles.** "(O)", "(R)", "(F11)" live
+- [x] **97. Consistent keyboard-shortcut hints in panel titles.** "(O)", "(R)", "(F11)" live
   in tooltips only; show them in panel chrome for discoverability. *S · S*
+  — `PanelTheme.make_panel_header(..., shortcut_hint)` + Settings/Render/Sound/Mind/
+  Chronicle/Camera/Residents/Help headers.
 
 ## Section O — Web landing & marketing surface
 
 - [ ] **98. Auto-update the landing version pill.** `docs/index.html` still
-  hardcodes the version (currently `v0.2.53`, kept in sync by hand); a
+  hardcodes the version (currently `v0.2.54`, kept in sync by hand); a
   small Actions job (or client fetch of the GitHub Releases API) keeps it current. *S · S*
 - [ ] **99. Add SEO + structured data.** Missing `keywords`/`author` meta and a JSON-LD
   `SoftwareApplication`/`VideoGame` schema with per-platform download URLs for richer social

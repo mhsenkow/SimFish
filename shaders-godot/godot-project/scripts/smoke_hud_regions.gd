@@ -66,6 +66,24 @@ func _initialize() -> void:
 		var col: Rect2 = probe["LEFT_COLUMN"]
 		t.check(col.position.y >= 52.0, "%dx%d: column clears the top bar" % [vp.x, vp.y])
 		t.check(col.end.y <= vp.y - 56.0, "%dx%d: column clears the footer" % [vp.x, vp.y])
+	# Phone portrait: rail docks to the bottom; regions stay disjoint.
+	var phone: Vector2 = Vector2(390, 844)
+	var phone_r: Dictionary = H.regions(phone, Vector4.ZERO, "bottom", 52.0, 56.0, -1.0)
+	var phone_tag: String = "390x844 bottom-rail"
+	var phone_live: Array[String] = ["TOP_BAR", "RAIL", "BOTTOM_BAR", "BOTTOM_LEFT_STACK", "BOTTOM_CENTRE"]
+	for k in phone_live:
+		t.check(phone_r.has(k) and phone_r[k] is Rect2, "%s: region %s present" % [phone_tag, k])
+		var prect: Rect2 = phone_r.get(k, Rect2())
+		t.check(prect.size.x > 0.0 and prect.size.y > 0.0,
+			"%s: %s has area (%s)" % [phone_tag, k, prect])
+		t.check(Rect2(Vector2.ZERO, phone).encloses(prect),
+			"%s: %s inside the viewport (%s)" % [phone_tag, k, prect])
+	for i in phone_live.size():
+		for j in range(i + 1, phone_live.size()):
+			var pa: Rect2 = phone_r[phone_live[i]]
+			var pb: Rect2 = phone_r[phone_live[j]]
+			t.check(not pa.intersects(pb),
+				"%s: %s %s overlaps %s %s" % [phone_tag, phone_live[i], pa, phone_live[j], pb])
 	t.check(not bool(H.regions(Vector2(1536, 864), Vector4.ZERO, "right", 52.0, 56.0,
 		1472.0).get(H.COLUMNS_EXCLUSIVE, true)), "1536 wide: both columns fit")
 	t.check(bool(H.regions(Vector2(900, 600), Vector4.ZERO, "right", 52.0, 56.0,

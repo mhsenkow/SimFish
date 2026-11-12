@@ -28,6 +28,9 @@
 #   FISH_PROBE_OUT        report path (default user://fish_behaviour_probe.txt)
 #   FISH_PROBE_SPLIT      1 = also time frames with fish / sim processing off
 #   FISH_PROBE_MOTION_N   fish per species given 30 Hz pose tracks (default 4)
+#   FISH_PROBE_MAX_FPS    Engine.max_fps (HOLISTIC #099; 0 = uncapped)
+#   FISH_PROBE_TIME_SCALE sim.time_scale after boot (default leave alone)
+#   FISH_PROBE_FIXED_SEED force sim.tank_seed for paired matrix runs
 #
 # Motion quality (CREATURE_MOTION_700 #85-#89 #92 #100 #119), appended after
 # the behaviour table: up to FISH_PROBE_MOTION_N fish per species get 30 Hz
@@ -86,6 +89,10 @@ var _motion_t: float = 0.0
 # instance_id -> {species, max_turn, len, t, pos, yaw, lat, speed, exempt, ch:{}}
 var _motion: Dictionary = {}
 var _motion_count: Dictionary = {}
+var _fps_knobs_applied: bool = false
+var _path_len_total: float = 0.0
+var _path_prev: Dictionary = {}  # instance_id -> Vector3
+var _tank_age_start: float = -1.0
 
 
 func _ready() -> void:
@@ -113,6 +120,9 @@ func _ready() -> void:
 	_out = _env("FISH_PROBE_OUT", _out)
 	_split = _env("FISH_PROBE_SPLIT", "0") == "1"
 	_motion_n = maxi(0, _env("FISH_PROBE_MOTION_N", "4").to_int())
+	var max_fps_s: String = _env("FISH_PROBE_MAX_FPS", "")
+	if not max_fps_s.is_empty():
+		Engine.max_fps = maxi(0, max_fps_s.to_int())
 	for part in _env("FISH_PROBE_STOCK", "").split(",", false):
 		var kv: PackedStringArray = part.split(":")
 		if kv.size() == 2:
@@ -120,7 +130,8 @@ func _ready() -> void:
 	process_priority = 1000
 	_main = load("res://main.tscn").instantiate()
 	add_child(_main)
-	print("[fish_probe] scenario=", id, " warmup=", _warmup, " sample=", _sample_len)
+	print("[fish_probe] scenario=", id, " warmup=", _warmup, " sample=", _sample_len,
+		" max_fps=", Engine.max_fps)
 
 
 static func _env(key: String, fallback: String) -> String:
@@ -143,6 +154,15 @@ func _process(dt: float) -> void:
 		if w is Node:
 			_world = w
 		return
+	# HOLISTIC #099 — apply paired-run knobs once sim exists.
+	if not _fps_knobs_applied:
+		_fps_knobs_applied = true
+		var ts_env: String = _env("FISH_PROBE_TIME_SCALE", "")
+		if not ts_env.is_empty() and _sim.get("time_scale") != null:
+			_sim.set("time_scale", maxf(0.25, ts_env.to_float()))
+		var seed_env: String = _env("FISH_PROBE_FIXED_SEED", "")
+		if not seed_env.is_empty() and _sim.get("tank_seed") != null:
+			_sim.set("tank_seed", seed_env.to_int())
 	var fish: Array = _sim.get("fish") as Array
 	if fish == null or fish.is_empty():
 		if _boot_frames > 3000:
@@ -265,6 +285,14 @@ func _sample(fish: Array) -> void:
 		(trk["yaws"] as Array).append(atan2(f.heading.x, -f.heading.z))
 		var bk_v: Variant = f.get("_bout_kind")
 		(trk["bk"] as Array).append(int(bk_v) if bk_v != null else 0)
+		# HOLISTIC #099 — horizontal path length for FPS/time-scale matrices.
+		var prev_p: Variant = _path_prev.get(key, null)
+		var pos_xz: Vector3 = Vector3(f.global_position.x, 0.0, f.global_position.z)
+		if prev_p is Vector3:
+			_path_len_total += pos_xz.distance_to(prev_p as Vector3)
+		_path_prev[key] = pos_xz
+		if _tank_age_start < 0.0 and _sim.get("tank_age_s") != null:
+			_tank_age_start = float(_sim.get("tank_age_s"))
 		if bool(f.get("_courtship_flare")):
 			trk["court"] = int(trk["court"]) + 1
 		var disp: Variant = f.get("_lb_display_t")
@@ -460,12 +488,18 @@ func _finish(fish: Array) -> void:
 		scenario_id, seed_v, time_scale, tier if tier != "" else "default",
 		fish.size(), _warmup, _sample_len])
 	lines.append("population  %s" % JSON.stringify(pop))
-	lines.append("samples_per_track_hz=%.1f  sample_dt=%.2f  build=%s" % [
+	lines.append("samples_per_track_hz=%.1f  sample_dt=%.2f  build=%s  max_fps=%d" % [
 		1.0 / SAMPLE_DT, SAMPLE_DT,
-		String(ProjectSettings.get_setting("application/config/version", ""))])
+		String(ProjectSettings.get_setting("application/config/version", "")),
+		Engine.max_fps])
 	var fm: Array = _frame_ms
 	lines.append("frame_ms  mean %.2f  p50 %.2f  p95 %.2f  p99 %.2f  n=%d" % [
 		_mean(fm), _pct(fm, 0.5), _pct(fm, 0.95), _pct(fm, 0.99), fm.size()])
+	# HOLISTIC #099 — locomotion integrity across frame caps / time scales.
+	var age_end: float = float(_sim.get("tank_age_s")) if _sim != null and _sim.get("tank_age_s") != null else -1.0
+	var age_delta: float = age_end - _tank_age_start if _tank_age_start >= 0.0 and age_end >= 0.0 else -1.0
+	lines.append("holistic_099  path_len_xz=%.2f  tank_age_delta=%.2f  sample_sim_s=%.2f  tolerated: dart%%±8pp path±12%% age_delta≈sample" % [
+		_path_len_total, age_delta, _sample_len])
 	var by_sp: Dictionary = {}
 	for key in _track.keys():
 		var trk: Dictionary = _track[key]

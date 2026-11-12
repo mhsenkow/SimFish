@@ -57,7 +57,7 @@ func _ready() -> void:
 func _build_ui() -> void:
 	# House pattern: header ×, scrolling body, no footer (no actions).
 	var shell: Dictionary = PanelTheme.make_panel_shell("Camera Views",
-		func(): visible = false)
+		func(): visible = false, [], "V")
 	add_child(shell.root)
 	var body: VBoxContainer = shell.body
 

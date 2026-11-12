@@ -299,6 +299,8 @@ var _player_glance_last_pos: Vector3 = Vector3.ZERO
 # per fish per tick.
 var _school_pulse_phase: float = 0.0
 const SCHOOL_PULSE_PERIOD: float = 28.0
+var _school_audio_cd: float = 0.0
+var _school_last_lock: float = 0.0
 
 # ---- Mourning ----
 # When a named fish dies, school-mates of the same species near the death
@@ -996,6 +998,10 @@ func pulse_glass_tap(world_pos: Vector3) -> void:
 	if tap_n > 0:
 		tap_away = (tap_away / float(tap_n)).normalized()
 	_MotionFieldScript.inject_startle(fish, world_pos, base_strength * 0.55, tap_away, false)
+	# Audible contract independent of whether any fish C-starts: a weak
+	# panned plink scaled by habituation so cry-wolf taps stay soft.
+	_play_ambient_event("startle", clampf(base_strength * 0.38, 0.08, 0.42),
+		"", world_pos)
 	_glass_tap_count += 1
 	if daylight() < 0.28:
 		NightWatch.note_night_disturbance(self)
@@ -3156,8 +3162,9 @@ func _physics_process(dt: float) -> void:
 		_sim_work_usec = 0
 	if _sim_work_usec >= SIM_RENDER_WORK_BUDGET_USEC:
 		return
-	var tick_limit: int = 4
-	if _last_tick_usec > 0:
+	var fast_forward: bool = time_scale >= 4.0
+	var tick_limit: int = 1 if fast_forward else 4
+	if not fast_forward and _last_tick_usec > 0:
 		tick_limit = clampi(int(float(SIM_RENDER_WORK_BUDGET_USEC - _sim_work_usec)
 			/ float(_last_tick_usec)), 1, 4)
 	# Scale incoming delta by time_scale so pause/fast-forward work uniformly.
@@ -3167,10 +3174,10 @@ func _physics_process(dt: float) -> void:
 	# Clamp the accumulator to prevent a "spiral of death" on slow frames: at
 	# time_scale=16 a single 100ms hitch enqueues 1.6s = 16 ticks; if any of
 	# those ticks then runs slower than its share of real time, _accum grows
-	# faster than it drains and the game-loop locks. Cap at 4 ticks (0.4s of
-	# sim work), or less when measured tick cost exhausts the render budget.
-	# Discarded time is shared by ecology and daylight.
-	_accum = minf(_accum, SIM_DT * float(tick_limit))
+	# faster than it drains and the game-loop locks. Accepted work stays 0.4s.
+	# At 4× and above that slice is ONE tick, so 5× and 10× cost the same CPU.
+	# At 1× a hitch still splits into at most four 0.1s ticks.
+	_accum = minf(_accum, SIM_DT * (4.0 if fast_forward else float(tick_limit)))
 	# Light, seasonal cues and stats must consume the same accepted time as
 	# ecology. Discarded hitch debt must not age daylight ahead of the tank.
 	sdt = maxf(0.0, _accum - previous_accum)
@@ -3184,12 +3191,21 @@ func _physics_process(dt: float) -> void:
 		if cfg_tc != null:
 			cycle_len = maxf(15.0, float(cfg_tc.day_length_s))
 		day_phase = fposmod(day_phase + sdt / cycle_len, 1.0)
-	while _accum >= SIM_DT:
-		_accum -= SIM_DT
-		var tick_start: int = Time.get_ticks_usec()
-		_tick(SIM_DT)
-		_last_tick_usec = maxi(1, Time.get_ticks_usec() - tick_start)
-		_sim_work_usec += _last_tick_usec
+	if fast_forward:
+		if _accum > 0.0001:
+			var step: float = _accum
+			_accum = 0.0
+			var tick_start: int = Time.get_ticks_usec()
+			_tick(step)
+			_last_tick_usec = maxi(1, Time.get_ticks_usec() - tick_start)
+			_sim_work_usec += _last_tick_usec
+	else:
+		while _accum >= SIM_DT:
+			_accum -= SIM_DT
+			var tick_start: int = Time.get_ticks_usec()
+			_tick(SIM_DT)
+			_last_tick_usec = maxi(1, Time.get_ticks_usec() - tick_start)
+			_sim_work_usec += _last_tick_usec
 	_stats_timer += sdt
 	if _stats_timer >= 1.0:
 		_stats_timer = 0.0
@@ -4090,15 +4106,18 @@ func _tick(dt: float) -> void:
 	_prune_invalid(waste)
 	_tick_carrying_capacity(dt)
 	_tick_long_arc(dt)
-	_guardian_mind_accum += dt
-	while _guardian_mind_accum >= GUARDIAN_MIND_DT:
-		_guardian_mind_accum -= GUARDIAN_MIND_DT
-		_tick_guardian(GUARDIAN_MIND_DT)
-	_tick_make_it_there(dt)
-	_tick_night_watch(dt)
-	_tick_cast_change_guardian()
-	_tick_care_nudge(dt)
-	_tick_crisis_voice()
+	# Narration, care prompts and the guardian mind do not change the water.
+	# Skip them while the player is fast-forwarding.
+	if time_scale < 4.0:
+		_guardian_mind_accum += dt
+		while _guardian_mind_accum >= GUARDIAN_MIND_DT:
+			_guardian_mind_accum -= GUARDIAN_MIND_DT
+			_tick_guardian(GUARDIAN_MIND_DT)
+		_tick_make_it_there(dt)
+		_tick_night_watch(dt)
+		_tick_cast_change_guardian()
+		_tick_care_nudge(dt)
+		_tick_crisis_voice()
 	_trophic_hour_timer += dt
 	if _trophic_hour_timer >= 3600.0:
 		_trophic_hour_timer = 0.0
@@ -4111,7 +4130,10 @@ func _tick(dt: float) -> void:
 	if _school_pulse_phase > TAU * 1000.0:
 		_school_pulse_phase = fmod(_school_pulse_phase, TAU)
 	_shadow_cooldown = maxf(0.0, _shadow_cooldown - dt)
+	_school_audio_cd = maxf(0.0, _school_audio_cd - dt)
 	topdown.tick(self, dt, _school_pulse_phase)
+	if time_scale < 4.0:
+		_maybe_schooling_audio()
 	_prune_invalid(plants)
 	_resilience_cooldown_s = maxf(0.0, _resilience_cooldown_s - dt)
 
@@ -4297,10 +4319,15 @@ func _tick(dt: float) -> void:
 	_MindArousalFieldScript.begin_tick(dt)
 	_begin_music_mods_frame()
 	if _music_mc_cache != null and _music_mc_cache.has_method("tank_ambient_scalar"):
+		var phrase: String = ""
+		if _music_mc_cache.has_method("tank_ambient_phrase"):
+			phrase = String(_music_mc_cache.tank_ambient_phrase())
 		_MotionFieldScript.tick_music_sweep(
 			fish,
 			float(_music_mc_cache.tank_ambient_scalar("sweep")),
-			float(_music_mc_cache.tank_ambient_scalar("beat_phase")))
+			float(_music_mc_cache.tank_ambient_scalar("beat_phase")),
+			phrase,
+			float(_music_mc_cache.tank_ambient_scalar("downbeat")) > 0.5)
 	_MindDriveSoAScript.integrate_fish(fish, dt, self)
 	var cam: Camera3D = _get_camera()
 	var have_cam: bool = cam != null
@@ -5705,18 +5732,79 @@ func _play_ambient_event(event_name: String, intensity: float = -1.0, species: S
 # startled, darting school lifts the groove; a calm tank settles it. The audio
 # side (note_swim_activity) only raises the smoothed "flow" toward this value,
 # so it decays naturally when the tank quiets — no need to push every frame.
+func _maybe_schooling_audio() -> void:
+	# Wire AmbientAudio.play_schooling_event when school fish show a cohesion
+	# spike (mean pairwise speed lock + pulse near peak).
+	if _school_audio_cd > 0.0 or fish.size() < 4:
+		return
+	var schoolers: Array = []
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var pat: String = String(f.get("swim_pattern"))
+		if pat in ["school", "shoal"] or float(f.get("schooling_strength")) > 0.4:
+			schoolers.append(f)
+	if schoolers.size() < 4:
+		return
+	var pulse_peak: float = absf(sin(_school_pulse_phase))
+	if pulse_peak < 0.82:
+		return
+	var lock_acc: float = 0.0
+	var lock_n: int = 0
+	var n: int = mini(schoolers.size(), 8)
+	for i in n:
+		var a: Node = schoolers[i]
+		var sa: float = float(a.get("speed"))
+		for j in range(i + 1, mini(n, i + 4)):
+			var sb: float = float(schoolers[j].get("speed"))
+			var denom: float = maxf(sa, sb)
+			if denom < 0.05:
+				continue
+			lock_acc += 1.0 - absf(sa - sb) / denom
+			lock_n += 1
+	if lock_n <= 0:
+		return
+	var lock: float = lock_acc / float(lock_n)
+	if lock < 0.72 or lock <= _school_last_lock + 0.04:
+		_school_last_lock = maxf(_school_last_lock * 0.98, lock)
+		return
+	_school_last_lock = lock
+	_school_audio_cd = 4.5
+	var audio := _ambient_audio()
+	var intensity: float = clampf(0.4 + lock * 0.45, 0.4, 0.85)
+	if audio != null and audio.has_method("play_schooling_event"):
+		audio.play_schooling_event(intensity)
+	# Bidirectional: a cohesion spike also revs MusicContext so dancers lock in.
+	if audio != null and audio.has_method("note_swim_activity"):
+		audio.note_swim_activity(clampf(0.55 + lock * 0.4, 0.55, 1.0))
+	var mc_school: Node = get_node_or_null("/root/MusicContext")
+	if mc_school != null and schoolers.size() > 0 and is_instance_valid(schoolers[0]):
+		if mc_school.has_method("on_life_event"):
+			mc_school.on_life_event((schoolers[0] as Node).get_instance_id())
+
+
 func _push_swim_activity() -> void:
 	var audio := _ambient_audio()
 	if audio == null or not audio.has_method("note_swim_activity"):
 		return
 	var total: float = 0.0
 	var n: int = 0
+	var bout_boost: float = 0.0
 	for f in fish:
 		if not is_instance_valid(f):
 			continue
 		var ms: float = float(f.max_speed)
 		if ms > 0.01:
-			total += clampf(float(f.speed) / ms, 0.0, 1.0)
+			var speed_n: float = clampf(float(f.speed) / ms, 0.0, 1.0)
+			# Bouts can look busy (hover scull / clipped darts) while mean
+			# speed stays low — bias the bed so visual activity is audible.
+			if float(f.burst_remaining) > 0.05:
+				speed_n = maxf(speed_n, 0.55)
+				bout_boost += 0.12
+			elif int(f._bout_kind) == 1:  # FishLifeBouts.BOUT_HOVER
+				speed_n = maxf(speed_n, 0.28)
+				bout_boost += 0.04
+			total += speed_n
 			n += 1
 	for s in shrimp:
 		if not is_instance_valid(s):
@@ -5726,7 +5814,9 @@ func _push_swim_activity() -> void:
 			total += clampf(float(s.speed) / ms2, 0.0, 1.0)
 			n += 1
 	if n > 0:
-		audio.note_swim_activity(clampf(total / float(n), 0.0, 1.0))
+		var mean: float = total / float(n)
+		mean = clampf(mean + minf(bout_boost / float(n), 0.25), 0.0, 1.0)
+		audio.note_swim_activity(mean)
 
 
 # Emit a death musically, colored by the creature's age + cause when the audio

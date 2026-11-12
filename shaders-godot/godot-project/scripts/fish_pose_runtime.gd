@@ -68,6 +68,32 @@ static func set_edit_channels(f: Fish, channels: Dictionary) -> void:
 	f.set_meta("_pose_channels", channels.duplicate(true))
 
 
+static func _music_keyed_pose(f: Fish) -> String:
+	# CREATURE_MOTION #679 — display on the drop/downbeat, glide on a hold.
+	if f == null or not f.has_method("_music_mods"):
+		return ""
+	var mm: Dictionary = f._music_mods()
+	if float(mm.get("dance_blend", 0.0)) < 0.35:
+		f.set_meta("_music_pose_name", "")
+		return ""
+	var want: String = ""
+	if String(mm.get("phrase_state", "")) == "drop" and float(mm.get("downbeat_pulse", 0.0)) > 0.5:
+		want = "display"
+	elif float(mm.get("glide_hold", 0.0)) > 0.45:
+		want = "glide"
+	var now: int = Engine.get_process_frames()
+	if want != "":
+		f.set_meta("_music_pose_name", want)
+		f.set_meta("_music_pose_frame", now)
+		return want
+	var held: String = str(f.get_meta("_music_pose_name", ""))
+	var held_at: int = int(f.get_meta("_music_pose_frame", 0))
+	if held != "" and now - held_at <= 12:
+		return held
+	f.set_meta("_music_pose_name", "")
+	return ""
+
+
 static func select_pose(f: Fish) -> String:
 	# Priority: death → illness → sleep → gulp/gasp → display/threat → forage poses → hover/cruise.
 	if f.has_meta("_pose_force"):
@@ -99,6 +125,9 @@ static func select_pose(f: Fish) -> String:
 		if f.rank_within_species < 0.35 and f.stress > 0.55:
 			return "submission"
 		return "clamped"
+	var music_pose: String = _music_keyed_pose(f)
+	if music_pose != "":
+		return music_pose
 	if f._sift_timer > 0.05:
 		return "sifting"
 	if f.ventral_sucker and f.speed < 0.2 and f.global_position.y < f._water_surface_y() - 1.5:

@@ -83,6 +83,23 @@ func _initialize() -> void:
 		"the follow framing must give a creature at least 32 internal pixels "
 			+ "of height (got %.0f) — below that no expression survives" % px)
 
+	# --- HOLISTIC #024: size-aware frac + pullback for centerpiece fish ---
+	t.check(CC.follow_subject_frac(0.5) >= CC.FOLLOW_SUBJECT_FRAC - 0.001,
+		"fry/adult keep the default frame fraction")
+	t.check(CC.follow_subject_frac(2.4) < CC.follow_subject_frac(0.6) - 0.02,
+		"centerpiece subjects request a smaller on-screen fraction")
+	var close_shot: float = 4.0
+	var big_no: float = CC.radius_for_subject(2.5, 45.0, close_shot,
+		CC.follow_subject_frac(2.5), false)
+	var big_yes: float = CC.radius_for_subject(2.5, 45.0, close_shot,
+		CC.follow_subject_frac(2.5), true)
+	t.check(big_no <= close_shot + 0.001, "without pullback large fish stay at player ceiling")
+	t.check(big_yes > close_shot + 0.05, "with pullback large fish ease out of a tight shot")
+	t.check(CC.follow_radius_floor(0.3, 8.0) <= CC.FOLLOW_MIN_RADIUS + 0.01,
+		"fry floor stays near FOLLOW_MIN_RADIUS")
+	t.check(CC.follow_radius_floor(1.5, 8.0) >= CC.FOLLOW_MIN_RADIUS,
+		"adult follow floor is at least the near plane margin")
+
 	# --- main.gd restores the shot afterwards ---
 	var src: String = _read("res://scripts/main.gd")
 	t.check(src.contains("_follow_saved_radius"),
@@ -91,6 +108,10 @@ func _initialize() -> void:
 		"…and puts the player back where they were when the follow ends")
 	t.check(src.contains("CameraController.radius_for_subject"),
 		"the cinematic follow tick actually uses the framing helper")
+	t.check(src.contains("_tick_follow_occlusion"),
+		"HOLISTIC #025 occlusion nudge is wired into cinematic follow")
+	t.check(src.contains("effective_size"),
+		"HOLISTIC #024 follow height uses live effective_size")
 
 	quit(t.finish())
 

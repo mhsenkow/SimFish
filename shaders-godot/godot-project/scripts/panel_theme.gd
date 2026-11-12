@@ -828,7 +828,8 @@ static func make_header_close_button(on_close: Callable = Callable()) -> Button:
 
 
 # Title row + the header close. Every panel starts with this.
-static func make_panel_header(title_text: String, on_close: Callable = Callable()) -> HBoxContainer:
+static func make_panel_header(title_text: String, on_close: Callable = Callable(),
+		shortcut_hint: String = "") -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.name = "PanelHeader"
 	row.add_theme_constant_override("separation", 8)
@@ -837,6 +838,15 @@ static func make_panel_header(title_text: String, on_close: Callable = Callable(
 	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	title.custom_minimum_size.x = 120.0
 	row.add_child(title)
+	# SYSTEMIC #97 — optional shortcut chip so keyboard players see the hotkey.
+	if not shortcut_hint.is_empty():
+		var hint := Label.new()
+		hint.name = "ShortcutHint"
+		hint.text = shortcut_hint
+		apply_font(hint, FONT_MONO, SIZE_CAPTION)
+		hint.add_theme_color_override("font_color", DIM_FG)
+		hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		row.add_child(hint)
 	if on_close.is_valid():
 		row.add_child(make_header_close_button(on_close))
 	return row
@@ -901,13 +911,13 @@ static func make_panel_footer(on_close: Callable, primary: Button = null,
 # Add `root` to the PanelContainer and fill `body`. `footer_actions` are laid
 # out left-to-right, so pass the primary action LAST.
 static func make_panel_shell(title_text: String, on_close: Callable,
-		footer_actions: Array = []) -> Dictionary:
+		footer_actions: Array = [], shortcut_hint: String = "") -> Dictionary:
 	var root := VBoxContainer.new()
 	root.name = "PanelShell"
 	root.add_theme_constant_override("separation", 8)
 	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	var header := make_panel_header(title_text, on_close)
+	var header := make_panel_header(title_text, on_close, shortcut_hint)
 	root.add_child(header)
 	root.add_child(make_rule())
 	var scroll := make_panel_scroll()
@@ -1009,6 +1019,50 @@ static func find_header_close(root: Node) -> Button:
 
 # Big panel title. Pair with add_rule() right after for a clean separator
 # between the title and the body content.
+static func make_living_preview(accent: Color, preview_seed: float, height: float = 96.0) -> Control:
+	var frame := PanelContainer.new()
+	frame.name = "LivingPreview"
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.clip_contents = true
+	frame.custom_minimum_size = Vector2(0, height)
+	frame.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.09, 0.12, 1.0)
+	style.set_corner_radius_all(6)
+	frame.add_theme_stylebox_override("panel", style)
+	var water := ColorRect.new()
+	water.set_anchors_preset(Control.PRESET_FULL_RECT)
+	water.offset_left = 2.0
+	water.offset_top = 2.0
+	water.offset_right = -2.0
+	water.offset_bottom = -2.0
+	water.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var prev_shader: Shader = load("res://shaders/tank_preview.gdshader")
+	if prev_shader != null:
+		var mat := ShaderMaterial.new()
+		mat.shader = prev_shader
+		var top: Color = accent.lerp(Color(0.18, 0.38, 0.46), 0.55)
+		var bottom: Color = Color(0.04, 0.08, 0.12).lerp(accent, 0.18)
+		mat.set_shader_parameter("top_color", top)
+		mat.set_shader_parameter("bottom_color", bottom)
+		mat.set_shader_parameter("fish_color", accent)
+		mat.set_shader_parameter("seed", preview_seed)
+		water.material = mat
+	frame.add_child(water)
+	return frame
+
+
+static func make_shot_preview(tex: Texture2D, height: float = 120.0) -> TextureRect:
+	var shot := TextureRect.new()
+	shot.name = "QuitShot"
+	shot.custom_minimum_size = Vector2(0, height)
+	shot.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	shot.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	shot.texture = tex
+	shot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return shot
+
+
 static func make_title(text: String) -> Label:
 	var l := Label.new()
 	l.text = text

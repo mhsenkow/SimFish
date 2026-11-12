@@ -20,10 +20,12 @@ const CASCADE_HYST: float = 0.03
 static var propagation_blend: float = PROPAGATION_BLEND_DEFAULT
 
 static var _music_sweep_prev: float = 0.0
+static var _music_phrase_prev: String = ""
 
 
 static func reset_for_test() -> void:
 	_music_sweep_prev = 0.0
+	_music_phrase_prev = ""
 	agitation_decay = AGITATION_DECAY_DEFAULT
 	manoeuvre_wave_speed = MANOEUVRE_WAVE_SPEED_DEFAULT
 	propagation_blend = PROPAGATION_BLEND_DEFAULT
@@ -138,10 +140,24 @@ static func inject_calm(fish_arr: Array, origin: Vector3, amount: float = 0.35) 
 	inject_at(fish_arr, origin, -absf(amount))
 
 
-static func tick_music_sweep(fish_arr: Array, sweep: float, beat_phase: float) -> void:
+static func tick_music_sweep(fish_arr: Array, sweep: float, beat_phase: float,
+		phrase_state: String = "", downbeat: bool = false) -> void:
+	# CREATURE_MOTION #681 — fire on phrase edges (and bar-line downbeats
+	# while the tank is sweeping), not on every sweep-delta tick.
+	var phrase_changed: bool = phrase_state != "" and phrase_state != _music_phrase_prev
+	if phrase_state != "":
+		_music_phrase_prev = phrase_state
 	var rising: float = maxf(0.0, sweep - _music_sweep_prev)
 	_music_sweep_prev = sweep
-	if rising < 0.12 or sweep < 0.15:
+	var fire: bool = false
+	var inject: float = maxf(rising, sweep * 0.35)
+	if phrase_changed and sweep >= 0.15:
+		fire = true
+		inject = maxf(inject, sweep * 0.55)
+	elif downbeat and sweep >= 0.22:
+		fire = true
+		inject = maxf(inject, 0.18)
+	if not fire:
 		return
 	var leader: Node = null
 	var best_lead: float = -1.0
@@ -157,8 +173,8 @@ static func tick_music_sweep(fish_arr: Array, sweep: float, beat_phase: float) -
 	if leader == null:
 		return
 	var sweep_dir: Vector3 = Vector3(cos(beat_phase), 0.0, sin(beat_phase))
-	leader.motion_agitation = clampf(float(leader.motion_agitation) + rising * 0.85, 0.0, 1.0)
-	leader.motion_turn_intent = sweep_dir.normalized() * rising
+	leader.motion_agitation = clampf(float(leader.motion_agitation) + inject * 0.85, 0.0, 1.0)
+	leader.motion_turn_intent = sweep_dir.normalized() * inject
 
 
 static func agitation_turn_boost(agitation: float) -> float:

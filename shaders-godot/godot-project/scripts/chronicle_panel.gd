@@ -40,7 +40,7 @@ func _build_ui() -> void:
 	# House pattern: header ×, the chapter nav pinned under it, and the page
 	# in the shared scroll body (the page used to scroll inside its own
 	# RichTextLabel, so it behaved unlike every other panel).
-	var shell: Dictionary = PanelTheme.make_panel_shell("Chronicle", close_panel)
+	var shell: Dictionary = PanelTheme.make_panel_shell("Chronicle", close_panel, [], "L")
 	var outer: VBoxContainer = shell.root
 	var page: VBoxContainer = shell.body
 	_page_scroll = shell.scroll

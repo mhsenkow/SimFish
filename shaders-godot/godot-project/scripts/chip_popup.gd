@@ -18,8 +18,8 @@ extends PanelContainer
 # title that way, which is the same fragile index-walk that was reaching the
 # toast body label. `title_label` is exposed properly.
 
-# Above panels, below modals. Was duplicated as a literal in four places.
-const Z_INDEX: int = 220
+# Above panels, below modals — keep in lockstep with PanelTheme.Z_POPOVER.
+const Z_INDEX: int = 220  # PanelTheme.Z_POPOVER
 
 const BG: Color = Color(0.06, 0.07, 0.12, 0.96)
 

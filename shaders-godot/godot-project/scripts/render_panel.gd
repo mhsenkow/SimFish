@@ -258,7 +258,7 @@ func _build_ui() -> void:
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	outer.add_child(PanelTheme.make_panel_header("Rendering", func(): visible = false))
+	outer.add_child(PanelTheme.make_panel_header("Rendering", func(): visible = false, "R"))
 	outer.add_child(PanelTheme.make_subtitle(
 		"Pick a fidelity tier, then tune the look. Apply rebuilds the render viewport."))
 	outer.add_child(PanelTheme.make_rule())
@@ -532,7 +532,7 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_photo_mode_check.toggled.connect(func(v): TankConfig.photo_mode_enhanced = v)
 	capture_body.add_child(_photo_mode_check)
 	var photo_desc := PanelTheme.make_description()
-	photo_desc.text = tr("F12 saves a clean capture; Shift+F12 runs the signature poster preset.")
+	photo_desc.text = tr("F12 saves a clean capture; H hides chrome first. Shift+F12 runs the signature poster preset.")
 	capture_body.add_child(photo_desc)
 	_signature_shot_btn = PanelTheme.make_secondary_button("Signature shot (Shift+F12)")
 	_signature_shot_btn.pressed.connect(func():

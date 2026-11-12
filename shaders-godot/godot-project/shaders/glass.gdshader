@@ -12,7 +12,8 @@ uniform float rim_brightness : hint_range(0.0, 1.0) = 0.35;
 // Low-iron glass is almost invisible face-on; it reads at its edges, its rim
 // and where it turns to a grazing angle, and all of those keep full alpha.
 // 1 = legacy.
-uniform float face_veil : hint_range(0.0, 1.0) = 0.38;
+// HOLISTIC #055 — prism tanks stack 4 panes; keep face-on thinner than curved.
+uniform float face_veil : hint_range(0.0, 1.0) = 0.32;
 // Reflection of the room's warm wall colour, blended in by fresnel +
 // vertical gradient inside the fragment. Bumped from 0.22 → 0.42 so the
 // room is visibly ghosted in the glass instead of being a faint hint —
@@ -55,7 +56,7 @@ uniform float salt_creep : hint_range(0.0, 1.0) = 0.0;
 uniform float chroma_fringe : hint_range(0.0, 1.0) = 0.35;
 // #28–31 — room reflection flip, corner double-image, waterline refract.
 uniform float room_reflection_flip : hint_range(0.0, 1.0) = 0.55;
-uniform float corner_ghost : hint_range(0.0, 1.0) = 0.35;
+uniform float corner_ghost : hint_range(0.0, 1.0) = 0.22;
 uniform float waterline_refract : hint_range(0.0, 1.0) = 0.45;
 // #37 — cool-room condensation on lower third of outside glass.
 uniform float condensation_lower : hint_range(0.0, 1.0) = 0.0;
@@ -85,16 +86,21 @@ void fragment() {
 	float top_rim = smoothstep(0.55, 0.95, n.y) * rim_brightness;
 	col += vec3(0.92, 0.97, 1.0) * top_rim;
 
-	// Shape-specific band highlight.
+	// Shape-specific band highlight (HOLISTIC #055 — curved tanks need less
+	// additive band; prism tanks already stack panes).
 	float band = 0.0;
+	float band_w = 0.45;
 	if (tank_shape_id < 0.5) {
 		band = smoothstep(0.35, 0.65, abs(sin(world_pos.y * 0.55 + world_pos.x * 0.08)));
+		band_w = 0.32;
 	} else if (tank_shape_id < 1.5) {
 		band = smoothstep(0.82, 0.98, abs(dot(n, vec3(0.0, 0.3, 1.0))));
+		band_w = 0.38;
 	} else {
 		band = smoothstep(0.7, 0.95, fresnel);
+		band_w = 0.28;
 	}
-	col += glass_color.rgb * band * shape_band * 0.45;
+	col += glass_color.rgb * band * shape_band * band_w;
 
 	// Faint room reflection (vertical gradient + horizontal band).
 	float room_ref = smoothstep(0.15, 0.85, world_pos.y / max(water_surface_y, 0.1));
@@ -330,5 +336,8 @@ void fragment() {
 	// The rim specular is the one thing allowed past the translucency cap —
 	// a mirrored lip hides what is behind it. Everything else about the glass
 	// is still glass.
-	ALPHA = max(clamp(alpha, 0.02, 0.30), rim_spec * 0.94);
+	// Prism stacks four panes — hold the translucency ceiling a hair lower so
+	// common front views never milk into opaque walls (#055).
+	float alpha_cap = tank_shape_id < 0.5 ? 0.26 : 0.30;
+	ALPHA = max(clamp(alpha, 0.02, alpha_cap), rim_spec * 0.94);
 }

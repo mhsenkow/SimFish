@@ -142,11 +142,11 @@ static func cheat_sheet_lines(mobile: bool, gamepad: bool = false) -> PackedStri
 		"Alt+←/→ — cycle follow · C — portal · Esc — release · F — reset · G — auto-orbit",
 		"O — Settings · R — Rendering · M — Sound · Shift+M — Motion debug",
 		"B — Aquascape · [ / ] — brush size · Backspace — undo",
-		"H — Focus mode · P — Pause · T — Timelapse · 1–8 — Sim speed · F12 — Photo",
+		"H — Focus mode (hides chrome) · P — Pause · T — Timelapse · 1–8 — Sim speed · F12 — Photo",
 		"Click water — feed · 9 / 0 — food type · Shift+click — tap glass (startle)",
 		"Footer Care — Water change · Filter rinse",
 		"Click stat chips — history / water / mood / alerts",
-		"? / Shift+/ — this help · K — Residents",
+		"? / Shift+/ — this help · K — Residents · J — Mind · L — Chronicle · V — Camera",
 		"Right rail — Create · World · Look · System · Alerts · ❓ Help",
 	])
 
@@ -381,7 +381,7 @@ static func chemistry_row(key: String, value: float, _stats: Dictionary) -> Dict
 		"nh3":
 			var tint2: int = 0 if value < 0.15 else (1 if value < 0.28 else 2)
 			return {
-				"text": "NH₃: %.2f — %s" % [
+				"text": "NH₃: %.2f ppm — %s" % [
 					value,
 					"trace" if tint2 == 0 else ("elevated, mildly toxic" if tint2 == 1 else "toxic — cycle or plants needed"),
 				],
@@ -390,7 +390,7 @@ static func chemistry_row(key: String, value: float, _stats: Dictionary) -> Dict
 		"no2":
 			var tint3: int = 0 if value < 0.12 else (1 if value < 0.22 else 2)
 			return {
-				"text": "NO₂: %.2f — %s" % [
+				"text": "NO₂: %.2f ppm — %s" % [
 					value,
 					"safe" if tint3 == 0 else ("spiking — bacteria catching up" if tint3 == 1 else "dangerous"),
 				],
@@ -399,7 +399,7 @@ static func chemistry_row(key: String, value: float, _stats: Dictionary) -> Dict
 		"no3":
 			var tint4: int = 0 if value < 25.0 else (1 if value < 50.0 else 2)
 			return {
-				"text": "NO₃: %.2f — %s (plants use this)" % [
+				"text": "NO₃: %.2f ppm — %s (plants use this)" % [
 					value,
 					"fine" if tint4 == 0 else ("high" if tint4 == 1 else "very high"),
 				],

@@ -279,24 +279,56 @@ static func min_radius_for_mode(macro: bool) -> float:
 # 0.16 of frame height is ~46px at the 288-line internal render — enough for a
 # body, a tail beat and a fin, which is the whole point.
 const FOLLOW_SUBJECT_FRAC: float = 0.16
+# Cap so a centerpiece fish cannot fill the whole frame when the player was
+# already close (HOLISTIC #024).
+const FOLLOW_MAX_SUBJECT_FRAC: float = 0.28
 # Never smaller than this, whatever the subject: pushing the near plane into a
 # fry is a nausea machine, and the glass is in the way anyway.
 const FOLLOW_MIN_RADIUS: float = 2.6
 
 
+# HOLISTIC #024 — large subjects want a smaller on-screen fraction so they
+# remain readable without dominating the viewport.
+static func follow_subject_frac(subject_h: float) -> float:
+	var h: float = maxf(subject_h, 0.02)
+	if h <= 0.9:
+		return FOLLOW_SUBJECT_FRAC
+	if h >= 2.2:
+		return 0.10
+	return lerpf(FOLLOW_SUBJECT_FRAC, 0.10, (h - 0.9) / 1.3)
+
+
+# Soft follow floor: fry can go near FOLLOW_MIN_RADIUS; adults keep more glass
+# margin without jumping to the hero MIN_RADIUS (~4).
+static func follow_radius_floor(subject_h: float, tank_span: float = 8.0) -> float:
+	var span_floor: float = clampf(tank_span * 0.18, FOLLOW_MIN_RADIUS, 3.4)
+	if subject_h < 0.45:
+		return FOLLOW_MIN_RADIUS
+	return maxf(FOLLOW_MIN_RADIUS, span_floor * clampf(subject_h / 1.2, 0.7, 1.15))
+
+
 # Orbit radius that frames a subject of `subject_h` world units at `want_frac`
 # of the viewport height.
 #
-# Clamped to [FOLLOW_MIN_RADIUS, current_radius]: following may only ever move
-# the camera IN. A tiny subject must not fling the camera out past where the
-# player had it, and a large one should simply not change the shot.
+# Default clamp [FOLLOW_MIN_RADIUS, current_radius]: following only moves IN.
+# With `allow_pullback`, a subject that would exceed FOLLOW_MAX_SUBJECT_FRAC at
+# the current radius may ease OUT so centerpiece fish stay readable (#024).
 static func radius_for_subject(subject_h: float, fov_deg: float,
-		current_radius: float, want_frac: float = FOLLOW_SUBJECT_FRAC) -> float:
+		current_radius: float, want_frac: float = FOLLOW_SUBJECT_FRAC,
+		allow_pullback: bool = false) -> float:
 	var frac: float = clampf(want_frac, 0.02, 0.9)
 	var half_fov: float = deg_to_rad(clampf(fov_deg, 5.0, 170.0)) * 0.5
 	var tan_half: float = maxf(tan(half_fov), 0.001)
-	var want: float = maxf(subject_h, 0.02) / (2.0 * frac * tan_half)
-	return clampf(want, FOLLOW_MIN_RADIUS, maxf(current_radius, FOLLOW_MIN_RADIUS))
+	var h: float = maxf(subject_h, 0.02)
+	var want: float = h / (2.0 * frac * tan_half)
+	var floor_r: float = FOLLOW_MIN_RADIUS
+	var ceil_r: float = maxf(current_radius, FOLLOW_MIN_RADIUS)
+	if allow_pullback:
+		var at_current: float = h / (2.0 * maxf(current_radius, 0.05) * tan_half)
+		if at_current > FOLLOW_MAX_SUBJECT_FRAC:
+			var pull: float = h / (2.0 * FOLLOW_MAX_SUBJECT_FRAC * tan_half)
+			ceil_r = maxf(ceil_r, pull)
+	return clampf(want, floor_r, ceil_r)
 
 
 static func eye_position(target: Vector3, yaw: float, pitch: float,

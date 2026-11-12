@@ -12,21 +12,21 @@ Default agent work starts from the six pillar idea docs + GOALS (see
 [HOLISTIC_FINISHING_PLAN_400.md](HOLISTIC_FINISHING_PLAN_400.md) + ledger.
 Full backlog map = this file.
 
-## Operational facts (v0.2.53)
+## Operational facts (v0.2.54)
 
 Reconcile these when they drift (Holistic #014). Idea-doc intros dated
 2026-06-28 are historical snapshots — **do not treat those counts as current.**
 
 | Fact | Value | Source |
 |---|---|---|
-| Game version | `0.2.53` | `project.godot` `config/version` |
+| Game version | `0.2.54` | `project.godot` `config/version` |
 | Godot (CI / CONTRIBUTING) | 4.6.3 | `scripts/supply_chain/manifest.env`, `.github/workflows/` |
 | Autoloads | **11** (AppLog … GamepadInput) | `project.godot` `[autoload]`, `smoke_autoload_contract.gd` |
 | Scenario templates | **18** | `scenario_picker.gd` `SCENARIOS` |
-| Playable fish templates | **18** | `tank_config.gd` `SPECIES_LIBRARY` |
+| Playable fish templates | **76** | `tank_config.gd` `SPECIES_LIBRARY` + `species_shelf.gd` |
 | Internal render default | **1024×576** (beauty / first-launch mid: 512×288) | `TankConfig.render_width/height`, [STYLE_GUIDE](../style-guide/STYLE_GUIDE.md) |
 | Window | 1536×864, stretch `canvas_items` | `project.godot` |
-| `scripts/*.gd` | **642** (~**295** `smoke_*`) | counted 2026-11-10 |
+| `scripts/*.gd` | **654** (~**304** `smoke_*`) | counted 2026-11-12 |
 | Shaders | **26** `.gdshader` | `shaders-godot/godot-project/shaders/` |
 
 ## Start here
@@ -61,12 +61,13 @@ Two files, two audiences — both current:
 Canonical narrative: [../CHANGELOG.md](../CHANGELOG.md).
 
 Per-version stubs (short summary + link into CHANGELOG) remain at
-`RELEASE_v0.2.38.md` … `RELEASE_v0.2.53.md` so GitHub Pages and older README
+`RELEASE_v0.2.38.md` … `RELEASE_v0.2.54.md` so GitHub Pages and older README
 links keep working.
 
 | Stub | Version |
 |---|---|
-| [RELEASE_v0.2.53.md](RELEASE_v0.2.53.md) | Latest — smoke + mind wiring |
+| [RELEASE_v0.2.54.md](RELEASE_v0.2.54.md) | Latest — species shelf + HUD + dance |
+| [RELEASE_v0.2.53.md](RELEASE_v0.2.53.md) | Smoke + mind wiring |
 | [RELEASE_v0.2.52.md](RELEASE_v0.2.52.md) | Living motion + GPU skinning |
 | [RELEASE_v0.2.51.md](RELEASE_v0.2.51.md) | Room light, fluid, established look |
 | [RELEASE_v0.2.50.md](RELEASE_v0.2.50.md) | Long-run ecology |

@@ -39,7 +39,9 @@ float sg_boundary_wave(vec3 wp) {
 vec4 sg_grain(vec2 q, float size) {
 	vec2 g = q / size;
 	vec2 ci = floor(g);
-	vec2 f = fract(g);
+	// HOLISTIC #062 — stable per-column phase so the lattice does not tile.
+	float phase = sg_hash(ci + vec2(floor(q.y * 3.1), 2.7)) * 0.55;
+	vec2 f = fract(g + vec2(phase, phase * 0.37));
 	vec2 c = vec2(sg_hash(ci + 1.7), sg_hash(ci + 9.2)) * 0.36 + 0.32;
 	float r = mix(0.30, 0.47, sg_hash(ci + 4.4));
 	// Grains settle flat-side down: a little wider than tall.

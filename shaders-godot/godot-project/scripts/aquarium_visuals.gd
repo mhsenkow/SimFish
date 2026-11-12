@@ -597,7 +597,9 @@ func _update_glass_cosmetics(sdt: float) -> void:
 		_glass_mat.set_shader_parameter("edge_glow", 0.55)
 		_glass_mat.set_shader_parameter("chroma_fringe", 0.35)
 		_glass_mat.set_shader_parameter("room_reflection_flip", 0.55)
-		_glass_mat.set_shader_parameter("corner_ghost", 0.35)
+		# HOLISTIC #055/#067 — do not override shape-aware corner_ghost /
+		# screen_reflection owned by World._sync_glass_lighting (inside film
+		# stays green_dust; reflection is outside).
 		_glass_mat.set_shader_parameter("waterline_refract", 0.45)
 		_glass_mat.set_shader_parameter("condensation_lower",
 			clampf(humidity * 0.4 + (0.25 if bio > 0.3 else 0.0), 0.0, 0.7))
@@ -607,11 +609,7 @@ func _update_glass_cosmetics(sdt: float) -> void:
 			cover = float(_world.floater_coverage())
 		_glass_mat.set_shader_parameter("scum_line",
 			clampf(cover * 0.95 + bio * 0.15, 0.0, 0.9))
-		_glass_mat.set_shader_parameter("screen_reflection",
-			maxf(float(_glass_mat.get_shader_parameter("screen_reflection")), 0.28))
-		# Established reference tanks start with visible dust.
-		if fr.glass_dust < 0.08 and bio > 0.4:
-			fr.glass_dust = 0.22
+		# HOLISTIC #065 — no bio-seed that washes causal light×nutrient growth.
 		if _world.get("_light_fixture_root") != null and is_instance_valid(_world._light_fixture_root):
 			_glass_mat.set_shader_parameter("fixture_ghost_pos",
 				_world._light_fixture_root.global_position)

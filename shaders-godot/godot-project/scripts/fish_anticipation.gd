@@ -52,17 +52,24 @@ static func tick(f: Fish, dt: float) -> void:
 			# #146 / #168: stalkers S-coil instead of plain cock.
 			if _is_stalker(f) and float(f.get_meta("_ant_stalk", 0.0)) > 0.2:
 				f.set_meta("_ant_s_stage", urg)
-			if MotionStaging.begin_big_event(f.global_position, &"dart", 0.9):
-				MotionEvents.emit(&"dart_started", f, f.global_position, 0.7 * urg)
+			# Staging is a *visual* budget (#175/#366). Always emit audio so a
+			# busy region does not go silent while fish still dart.
+			var dart_staged: bool = MotionStaging.begin_big_event(
+				f.global_position, &"dart", 0.9)
+			MotionEvents.emit(&"dart_started", f, f.global_position,
+				(0.7 if dart_staged else 0.35) * urg)
+			if dart_staged:
 				MotionStaging.light_actor(f, 0.7)
 			else:
-				# #175 / #366: region saturated — quiet the burst so the stage stays readable.
 				f.burst_remaining = minf(f.burst_remaining, 0.12)
 		else:
 			# #145 / #342: C-start exposure sheet (stage1 → stage2 → glide).
 			_begin_c_start_sheet(f)
-			if MotionStaging.begin_big_event(f.global_position, &"startle", 1.0):
-				MotionEvents.emit(&"startled", f, f.global_position, 1.0)
+			var startle_staged: bool = MotionStaging.begin_big_event(
+				f.global_position, &"startle", 1.0)
+			MotionEvents.emit(&"startled", f, f.global_position,
+				1.0 if startle_staged else 0.45)
+			if startle_staged:
 				MotionStaging.light_actor(f, 0.85)
 				# #370: one adult smear ghost on the C-start.
 				f.call("_spawn_adult_action_smear")

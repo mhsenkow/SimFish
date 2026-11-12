@@ -172,21 +172,133 @@ static func is_soloist(lead_score: float, phrase_state: String) -> bool:
 	return lead_score > 0.68 and phrase_state == "chorus"
 
 
-static func species_modifiers(swim_pattern: String) -> Dictionary:
+static func dance_bank_cap(swim_pattern: String) -> float:
+	# CREATURE_MOTION #680 — tall hover bodies capsize at ±0.95.
+	match swim_pattern:
+		"hover", "cruise":
+			return 0.45
+		"shuffle":
+			return 0.40
+		"school", "shoal":
+			return 0.75
+		"dart":
+			return 0.70
+	return 0.65
+
+
+static func species_modifiers(swim_pattern: String, species: String = "") -> Dictionary:
+	# CREATURE_MOTION #678 — pattern repertoire plus optional species overlay.
+	var out: Dictionary
 	match swim_pattern:
 		"dart":
-			return {"sweep": 1.08, "speed": 1.05, "vertical": 0.58, "wander": 0.95}
+			out = {
+				"sweep": 1.08, "speed": 1.05, "vertical": 0.58, "wander": 0.95,
+				"vocab": "burst", "kick_bias": 1.35, "glide_bias": 0.22,
+				"fin_flare_bias": 0.85, "hop_bias": 0.2, "dart_chance_bias": 1.25,
+			}
 		"hover":
-			return {"sweep": 0.52, "speed": 0.78, "vertical": 1.18, "wander": 0.65}
+			out = {
+				"sweep": 0.52, "speed": 0.78, "vertical": 1.18, "wander": 0.65,
+				"vocab": "glide", "kick_bias": 0.42, "glide_bias": 1.45,
+				"fin_flare_bias": 0.75, "hop_bias": 0.15, "dart_chance_bias": 0.55,
+			}
 		"shuffle":
-			return {"sweep": 0.62, "speed": 0.88, "vertical": 0.38, "wander": 0.95}
+			out = {
+				"sweep": 0.62, "speed": 0.88, "vertical": 0.38, "wander": 0.95,
+				"vocab": "hop", "kick_bias": 0.9, "glide_bias": 0.35,
+				"fin_flare_bias": 0.7, "hop_bias": 1.35, "dart_chance_bias": 0.7,
+			}
 		"cruise":
-			return {"sweep": 1.08, "speed": 0.92, "vertical": 0.55}
+			out = {
+				"sweep": 1.08, "speed": 0.92, "vertical": 0.55,
+				"vocab": "flare", "kick_bias": 0.7, "glide_bias": 0.8,
+				"fin_flare_bias": 1.45, "hop_bias": 0.25, "dart_chance_bias": 0.85,
+			}
 		"meander":
-			return {"sweep": 0.75, "speed": 0.82, "vertical": 0.48, "wander": 1.25}
+			out = {
+				"sweep": 0.75, "speed": 0.82, "vertical": 0.48, "wander": 1.25,
+				"vocab": "flare", "kick_bias": 0.75, "glide_bias": 0.85,
+				"fin_flare_bias": 1.25, "hop_bias": 0.3, "dart_chance_bias": 0.8,
+			}
 		"shoal":
-			return {"sweep": 0.95, "speed": 1.05, "vertical": 0.52, "tightness": 1.08}
-	return {"sweep": 1.0, "speed": 1.0, "vertical": 1.0}
+			out = {
+				"sweep": 0.95, "speed": 1.05, "vertical": 0.52, "tightness": 1.08,
+				"vocab": "sweep", "kick_bias": 1.0, "glide_bias": 1.0,
+				"fin_flare_bias": 1.0, "hop_bias": 0.4, "dart_chance_bias": 1.0,
+			}
+		_:
+			out = {
+				"sweep": 1.0, "speed": 1.0, "vertical": 1.0,
+				"vocab": "sweep", "kick_bias": 1.0, "glide_bias": 1.0,
+				"fin_flare_bias": 1.0, "hop_bias": 0.4, "dart_chance_bias": 1.0,
+			}
+	if swim_pattern == "school":
+		out.vocab = "sweep"
+	var overlay: Dictionary = _species_vocab_overlay(species)
+	if not overlay.is_empty():
+		out.merge(overlay, true)
+	return out
+
+
+static func _species_vocab_overlay(species: String) -> Dictionary:
+	var sp: String = species.to_lower()
+	if sp.is_empty():
+		return {}
+	if "danio" in sp or "tetra" in sp or "rasbora" in sp or "neon" in sp:
+		return {
+			"vocab": "burst", "kick_bias": 1.28, "glide_bias": 0.28,
+			"dart_chance_bias": 1.2,
+		}
+	if "angel" in sp or "discus" in sp:
+		return {
+			"vocab": "glide", "kick_bias": 0.45, "glide_bias": 1.4,
+			"fin_flare_bias": 0.8, "dart_chance_bias": 0.5,
+		}
+	if "cory" in sp or "pleco" in sp:
+		return {
+			"vocab": "hop", "hop_bias": 1.35, "kick_bias": 0.95,
+			"glide_bias": 0.35,
+		}
+	if "betta" in sp or "gourami" in sp:
+		return {
+			"vocab": "flare", "fin_flare_bias": 1.5, "kick_bias": 0.7,
+		}
+	return {}
+
+
+static func dance_envelope_frames(swim_pattern: String, vocab: String = "") -> PackedInt32Array:
+	# CREATURE_MOTION #676 — exposure-sheet lengths at 60 fps.
+	var v: String = vocab if vocab != "" else String(species_modifiers(swim_pattern).get("vocab", "sweep"))
+	match v:
+		"burst":
+			return PackedInt32Array([4, 3, 10, 8])
+		"glide":
+			return PackedInt32Array([8, 6, 28, 16])
+		"hop":
+			return PackedInt32Array([5, 4, 14, 10])
+		"flare":
+			return PackedInt32Array([6, 5, 20, 14])
+	match swim_pattern:
+		"dart":
+			return PackedInt32Array([4, 3, 10, 8])
+		"hover":
+			return PackedInt32Array([8, 6, 28, 16])
+		"shuffle":
+			return PackedInt32Array([5, 4, 14, 10])
+	return PackedInt32Array([6, 4, 18, 12])
+
+
+static func dance_accent_gain(env: MotionEnvelope) -> float:
+	if env == null or not env.active():
+		return 0.0
+	match env.stage:
+		MotionEnvelope.Stage.WINDUP:
+			return 0.1
+		MotionEnvelope.Stage.ACTION:
+			return MotionEase.smooth(env.progress())
+		MotionEnvelope.Stage.FOLLOW, MotionEnvelope.Stage.SETTLE:
+			return clampf(env.value(), 0.0, 1.0)
+	return 0.0
 
 
 static func personality_modifiers(boldness: float, calm: float, gluttony: float) -> Dictionary:
@@ -477,11 +589,23 @@ static func universal_locomotion_mods(ctx: Dictionary, role: Dictionary, intensi
 	var kick: float = 0.0
 	var snare: float = 0.0
 	var hat: float = 0.0
-	if onsets.size() > 0 and onsets[0] is Dictionary:
+	# Prefer band tags (generative + analyzer); fall back to index order.
+	for o in onsets:
+		if not (o is Dictionary):
+			continue
+		var strength: float = float(o.get("strength", 0.0))
+		match String(o.get("band", "")):
+			"bass", "kick", "low":
+				kick = maxf(kick, strength)
+			"mid", "snare":
+				snare = maxf(snare, strength)
+			"treble", "hat", "high":
+				hat = maxf(hat, strength)
+	if kick <= 0.0 and onsets.size() > 0 and onsets[0] is Dictionary:
 		kick = float(onsets[0].get("strength", 0.0))
-	if onsets.size() > 1 and onsets[1] is Dictionary:
+	if snare <= 0.0 and onsets.size() > 1 and onsets[1] is Dictionary:
 		snare = float(onsets[1].get("strength", 0.0))
-	if onsets.size() > 2 and onsets[2] is Dictionary:
+	if hat <= 0.0 and onsets.size() > 2 and onsets[2] is Dictionary:
 		hat = float(onsets[2].get("strength", 0.0))
 	var swung_phase: float = swing_offset(beat_phase, swing)
 	var glide: float = 1.0 if energy_env < 0.2 else 0.0
@@ -489,6 +613,10 @@ static func universal_locomotion_mods(ctx: Dictionary, role: Dictionary, intensi
 	var kick_hit: float = kick if band == "bass" else kick * 0.35
 	var snare_hit: float = snare if band == "mid" else snare * 0.4
 	var hat_hit: float = hat if band == "treble" else hat * 0.45
+	# Busy tanks (swim_activity folded into onset strength) read louder accents.
+	var tank_busy: float = clampf(float(ctx.get("swim_busy", 0.0)), 0.0, 1.0)
+	kick_hit = clampf(kick_hit * (1.0 + tank_busy * 0.28), 0.0, 1.0)
+	snare_hit = clampf(snare_hit * (1.0 + tank_busy * 0.18), 0.0, 1.0)
 	var wave_tail: float = 0.0
 	if String(ctx.get("move", "")) == "wave":
 		var slot: float = float(ctx.get("instance_id", 0) % 17) / 17.0
@@ -498,19 +626,30 @@ static func universal_locomotion_mods(ctx: Dictionary, role: Dictionary, intensi
 	var eye_flash: float = 0.0
 	if bool(ctx.get("downbeat", false)):
 		eye_flash = clampf(drive * 0.85, 0.0, 1.0)
+	var kick_bias: float = float(role.get("kick_bias", 1.0))
+	var glide_bias: float = float(role.get("glide_bias", 1.0))
+	var flare_bias: float = float(role.get("fin_flare_bias", 1.0))
+	var hop_bias: float = float(role.get("hop_bias", 0.4))
+	var vocab: String = String(role.get("vocab", "sweep"))
+	kick_hit *= kick_bias
+	if vocab == "glide" or energy_env < 0.2:
+		glide = clampf(maxf(glide, 0.35 if vocab == "glide" else glide) * glide_bias, 0.0, 1.0)
+	elif vocab == "hop" and bool(ctx.get("downbeat", false)):
+		glide = clampf(glide + hop_bias * 0.22, 0.0, 1.0)
 	return {
 		"wag_freq_target": wag_target,
-		"tail_amp_extra": clampf(bass * 0.22 * drive * expressive, 0.0, 0.28),
+		"tail_amp_extra": clampf(bass * 0.22 * drive * expressive + kick_hit * 0.08, 0.0, 0.32),
 		"pec_flutter": clampf(high * 0.42 * drive + hat_hit * 0.35, 0.0, 0.55),
 		"downbeat_pulse": 1.0 if bool(ctx.get("downbeat", false)) else 0.0,
 		"kick_thump": clampf(kick_hit * drive, 0.0, 1.0),
 		"snare_flick": clampf(snare_hit * drive * expressive, 0.0, 1.0),
 		"glide_hold": glide,
 		"swung_beat_phase": swung_phase,
-		"fin_flare": clampf(maxf(kick_hit, snare_hit) * drive * 0.45, 0.0, 0.35),
+		"fin_flare": clampf(maxf(kick_hit, snare_hit) * drive * 0.45 * flare_bias, 0.0, 0.45),
 		"scale_pulse": clampf(kick_hit * 0.18 + snare_hit * 0.08, 0.0, 0.22) * drive,
 		"wave_tail": wave_tail,
 		"eye_flash": eye_flash,
+		"vocab": vocab,
 	}
 
 

@@ -45,6 +45,23 @@ func _initialize() -> void:
 	t.check(float(f.get_meta("_ant_tail_cock", 0.0)) > 0.5, "tail cock arms before dart")
 	t.check(MotionEvents.recent(&"dart_started").size() >= 1, "dart_started event fires")
 
+	# Staging visual budget must not silence audio (Wave B Pass 0).
+	MotionStaging.reset()
+	MotionEvents.clear()
+	f.set_meta("_ant_prev_burst", 0.0)
+	f.burst_remaining = 0.0
+	f._startle_remaining = 0.0
+	FishAnticipation.tick(f, 0.05)
+	for _i in 3:
+		MotionStaging.begin_big_event(f.global_position, &"fill", 1.0)
+	t.check(not MotionStaging.begin_big_event(f.global_position, &"probe", 1.0),
+		"staging region is saturated")
+	f.burst_remaining = 0.4
+	FishAnticipation.tick(f, 0.05)
+	t.check(MotionEvents.recent(&"dart_started").size() >= 1,
+		"dart_started still fires when staging rejects")
+	t.check(f.burst_remaining <= 0.12 + 1e-4, "rejected staging still quiets visual burst")
+
 	# #149: bite intent converges + slows.
 	FishAnticipation.note_bite_intent(f)
 	t.check(float(f.get_meta("_ant_fixate", 0.0)) > 0.5, "fixation before bite")

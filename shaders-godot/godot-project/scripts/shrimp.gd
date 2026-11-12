@@ -1415,9 +1415,17 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				night_factor = 0.52 + 0.48 * dl
 		target_velocity *= night_factor
 
-	var mr := get_tree().get_first_node_in_group("music_reactive")
-	if mr != null and mr.has_method("fauna_behavior_mods"):
-		var mods: Dictionary = mr.fauna_behavior_mods(get_instance_id())
+	# Prefer MusicContext (unified generative/external clock); fall back to
+	# the music_reactive group for legacy external-only scenes.
+	var mods: Dictionary = {}
+	var mc: Node = get_node_or_null("/root/MusicContext")
+	if mc != null and mc.has_method("fauna_behavior_mods"):
+		mods = mc.fauna_behavior_mods(get_instance_id(), _music_traits())
+	else:
+		var mr := get_tree().get_first_node_in_group("music_reactive")
+		if mr != null and mr.has_method("fauna_behavior_mods"):
+			mods = mr.fauna_behavior_mods(get_instance_id())
+	if not mods.is_empty():
 		var spd_mul: float = float(mods.get("speed", 1.0))
 		target_velocity *= spd_mul
 		if bool(mods.get("beat_dart", false)):
@@ -1487,6 +1495,17 @@ var _floor_gripped: bool = false
 var _land_drop: float = 0.0
 var _land_settle_t: float = 0.0
 var _land_settle_amp: float = 0.0
+
+
+func _music_traits() -> Dictionary:
+	var sleep_d: float = 1.0 if current_mode == Mode.REST else 0.0
+	var stress_v: float = clampf(_escape_remaining, 0.0, 1.0)
+	if get("stress") != null:
+		stress_v = maxf(stress_v, float(get("stress")))
+	return {
+		"swim_pattern": "shuffle", "boldness": 0.45, "calm": 0.55,
+		"stress": stress_v, "sleep_depth": sleep_d,
+	}
 
 
 func _look_up_for_direction(d: Vector3) -> Vector3:
@@ -1840,14 +1859,17 @@ func _process(dt: float) -> void:
 
 	_update_visibility_interp()
 
+	var on_cam: bool = sim == null or not sim.has_method("is_creature_visible_to_camera") \
+		or sim.is_creature_visible_to_camera(self)
 	# Substep at high time_scale — same stability rationale as fish.gd.
-	var n_steps: int = clampi(int(ceil(minf(dt, 0.32) / maxf(0.035 / clampf(speed / maxf(max_speed, 0.12), 0.5, 1.4), 0.022))), 1, 7)
+	# Off-camera shrimp take one step; 5× and 10× share the on-camera cap.
+	var step_cap: int = 3 if on_cam else 1
+	var n_steps: int = clampi(int(ceil(minf(dt, 0.32) / maxf(0.035 / clampf(speed / maxf(max_speed, 0.12), 0.5, 1.4), 0.022))), 1, step_cap)
 	var sub_dt: float = dt / float(n_steps)
 	for _step_i in n_steps:
 		_motion_substep(sub_dt)
 
-	var do_body_anim: bool = sim == null or not sim.has_method("is_creature_visible_to_camera") \
-		or sim.is_creature_visible_to_camera(self)
+	var do_body_anim: bool = on_cam
 	if not do_body_anim:
 		return
 
@@ -1924,9 +1946,21 @@ func _process(dt: float) -> void:
 
 	# Maturity scale lerps AND growth_factor so well-fed shrimp visibly bulk.
 	var scale_target: float = _maturity_scale() * growth_factor
-	var mr_s := get_tree().get_first_node_in_group("music_reactive")
-	if mr_s != null and mr_s.has_method("fauna_behavior_mods"):
-		scale_target *= float(mr_s.fauna_behavior_mods(get_instance_id()).get("scale", 1.0))
+	var scale_mods: Dictionary = {}
+	var mc_s: Node = get_node_or_null("/root/MusicContext")
+	if mc_s != null and mc_s.has_method("fauna_behavior_mods"):
+		scale_mods = mc_s.fauna_behavior_mods(get_instance_id(), _music_traits())
+	else:
+		var mr_s := get_tree().get_first_node_in_group("music_reactive")
+		if mr_s != null and mr_s.has_method("fauna_behavior_mods"):
+			scale_mods = mr_s.fauna_behavior_mods(get_instance_id())
+	if not scale_mods.is_empty():
+		scale_target *= float(scale_mods.get("scale", 1.0))
+		var kick: float = float(scale_mods.get("kick_thump", 0.0))
+		if kick > 0.02:
+			_pleopod_phase += kick * 0.45
+			if _tail_pivot != null:
+				_tail_pivot.rotation.x += sin(_swim_phase) * kick * 0.12
 	scale = scale.lerp(Vector3.ONE * scale_target, dt * 0.5)
 
 

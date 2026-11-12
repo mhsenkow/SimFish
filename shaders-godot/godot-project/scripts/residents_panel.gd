@@ -69,7 +69,7 @@ func _build_ui() -> void:
 
 	# --- Title + live count ---
 	# House header: title, live count, then the one × close at the right.
-	var title_row := PanelTheme.make_panel_header("Residents", func(): _hide_panel())
+	var title_row := PanelTheme.make_panel_header("Residents", func(): _hide_panel(), "K")
 	outer.add_child(title_row)
 	_count_lbl = Label.new()
 	PanelTheme.as_mono(_count_lbl, PanelTheme.SIZE_CAPTION)

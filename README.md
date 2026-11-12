@@ -4,7 +4,7 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.53](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.53)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
+**Latest release: [v0.2.54](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.54)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
 
 Docs map: [docs/INDEX.md](docs/INDEX.md) · release history: [CHANGELOG.md](CHANGELOG.md)
 
@@ -131,11 +131,12 @@ reef preset) the substrate type. The included presets:
 | Reef (saltwater) | Coral reef + mixed tropical school, each fish rolls a unique morph |
 | Custom | Hand-set counts (UI exposes glassdart/mudsifter/shrimp counts) |
 
-Species are defined in `tank_config.gd`'s `SPECIES_LIBRARY` — **18** playable
+Species are defined in `tank_config.gd`'s `SPECIES_LIBRARY` — **21** playable
 spawn templates (cardinal tetra, kuhli-like mudsifter, betta, killifish,
 guppy, Endler, rummy-nose, ember tetra, dwarf puffer, danio, corydoras,
 angelfish, harlequin rasbora, otocinclus, bristlenose pleco, dwarf gourami,
-mixed reef morph school, hillstream loach; plus two manual-spawn spares).
+mixed reef morph school, hillstream loach, freshwater gar, goby, severum;
+four of those are library-only / manual-spawn).
 `real_species_library.gd` / `real_species_fauna.gd` are read-only discovery
 catalogs, not spawn tables. Adding a playable species is one Dictionary
 entry; presets reference species by key and pick them up automatically.
@@ -188,10 +189,16 @@ Substrate nutrients ← waste deposits + reservoir trickle
 
 ## Recent additions
 
-Canon through **v0.2.53**: [CHANGELOG.md](CHANGELOG.md). Per-tag stubs:
+Canon through **v0.2.54**: [CHANGELOG.md](CHANGELOG.md). Per-tag stubs:
 `docs/RELEASE_v0.2.*.md`. Historical pass measurements:
 [docs/archive/passes/](docs/archive/passes/). Full doc map:
 [docs/INDEX.md](docs/INDEX.md).
+
+### v0.2.54 — species shelf, HUD, dance, performance
+
+Expanded playable fish shelf and habitat presets; real template screenshots; start/HUD polish; swim↔music dance envelopes; crowded-tank performance.
+
+[Release notes](docs/RELEASE_v0.2.54.md) · [CHANGELOG](CHANGELOG.md#v0254)
 
 ### v0.2.53 — smoke fixes, mind wiring, felt oxygen
 
@@ -474,8 +481,8 @@ godot --path . --headless --export-debug "macOS" ../../build/WalstadLoom.app
 Pushing a version tag builds all four platforms on GitHub Actions and uploads to [Releases](https://github.com/mhsenkow/SimFish/releases). macOS builds are Developer ID signed and notarized when `NOTARY_*` / `APPLE_ID` secrets are set.
 
 ```bash
-git tag v0.2.53
-git push origin v0.2.53
+git tag v0.2.54
+git push origin v0.2.54
 ```
 
 Workflow: `.github/workflows/release.yml` (Godot 4.6.3, export presets in `export_presets.cfg`). Run manually from **Actions → Release builds** for artifacts only (no Release unless tagged).
@@ -570,7 +577,7 @@ Done since the original roadmap:
 
 - [x] Save/load tank state — per-slot state.json with substrate + preset compatibility checks
 - [x] Multi-tank menu — duplicate, delete, switch between tanks
-- [x] More fish species — 18 playable `SPECIES_LIBRARY` templates + mixed-morph reef school
+- [x] More fish species — 21 playable `SPECIES_LIBRARY` templates + mixed-morph reef school
 - [x] Multiple biotopes — the Reef preset switches the world to saltwater + corals
 - [x] Mobile support — touch input, bottom-right action cluster, idle-dim HUD
 - [x] Day / night behavior shifts — diurnal vs nocturnal activity multipliers

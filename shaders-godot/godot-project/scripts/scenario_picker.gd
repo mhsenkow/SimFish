@@ -907,8 +907,18 @@ func _build_card(sc: Dictionary) -> Control:
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 10)
 	card.add_child(vb)
+	var accent_color: Color = sc.get("accent_color", PanelTheme.TITLE_FG)
+	var preview := TextureRect.new()
+	preview.custom_minimum_size = Vector2(0, 108)
+	preview.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	preview.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var shot_path := "res://assets/template_previews/%s.png" % String(sc.get("id", ""))
+	if ResourceLoader.exists(shot_path):
+		preview.texture = load(shot_path)
+	vb.add_child(preview)
 	var accent := ColorRect.new()
-	accent.color = sc.get("accent_color", PanelTheme.TITLE_FG)
+	accent.color = accent_color
 	accent.custom_minimum_size.y = 4
 	accent.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vb.add_child(accent)

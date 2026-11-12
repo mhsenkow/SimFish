@@ -8,6 +8,15 @@ Historical pass measurements: `docs/archive/passes/`.
 
 ## Unreleased
 
+## v0.2.54
+
+- **Species shelf:** dozens more playable fish templates (morph colour ways for mollies/platies) plus new habitat presets (livebearer show, mbuna, discus, betta, pea puffer, cory, oscar, hillstream, gar, and restocked classics).
+- **Template previews:** menu cards use real captured tank screenshots under `assets/template_previews/`.
+- **Start / HUD:** clearer walkthrough, top-bar shelf layout, metric chips that keep their numbers, day-night strip reserved beside the chip row.
+- **Swim ↔ music:** dance envelopes, species dance vocab, pose accents on drops/holds; freeze keeps pec/breath/eyes alive.
+- **Performance:** sim fast-forward cost closer to live time; off-camera fauna body work skipped.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.54) (macOS / Windows / Linux / Android). Stub: [docs/RELEASE_v0.2.54.md](docs/RELEASE_v0.2.54.md).
+
 ## v0.2.53
 
 - **Smoke suite:** seven regressions since v0.2.38 fixed; GDScript analyzer warnings cleared (zero warnings).

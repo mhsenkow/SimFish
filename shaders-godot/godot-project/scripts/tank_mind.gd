@@ -201,8 +201,11 @@ static func collect_bids(sim, tm: Dictionary, dl: float, room_idle_s: float) -> 
 		var bfc: float = _night_f(sim, "biofilter_calm")
 		if bfc > 0.35:
 			bids.append(_bid("biofilter", 0.26 + bfc * 0.2, ["biofilter", "night"]))
-		if _float_prop(sim, "dissolved_o2", 1.0) < 0.65 or _float_prop(sim, "dissolved_o2", 1.0) > 0.0:
-			bids.append(_bid("water_feel", 0.3, ["water", "interoception"]))
+		# LOOM #179 — water_feel salience from TankVitals deviation, not the
+		# always-true `o2 < 0.65 or o2 > 0.0` gate that fired every night tick.
+		var water_sal: float = _water_feel_salience(sim)
+		if water_sal > 0.0:
+			bids.append(_bid("water_feel", water_sal, ["water", "interoception"]))
 		if _night_f(sim, "night_stillness") > 0.55:
 			bids.append(_bid("stillness", 0.36, ["night", "motion"]))
 	# Biolum night-life (#39).
@@ -511,6 +514,45 @@ static func _float_prop(sim, key: String, fallback: float) -> float:
 	if v == null or v is Callable:
 		return fallback
 	return float(v)
+
+
+# LOOM #179 — tank-level water awareness from TankVitals (#301). Salience is
+# the largest |deviation| across the felt chemistry channels, softly amplified
+# by a worsening short slope. Healthy / unknown vitals produce 0 (no bid).
+const _WATER_FEEL_CHANNELS: Array = [
+	{"vital": "o2", "harm_sign": -1.0, "scale": 1.3},
+	{"vital": "toxic_ammonia", "harm_sign": 1.0, "scale": 3.5},
+	{"vital": "nitrite", "harm_sign": 1.0, "scale": 2.0},
+	{"vital": "nitrate", "harm_sign": 1.0, "scale": 0.05},
+	{"vital": "bloom", "harm_sign": 1.0, "scale": 1.0},
+]
+
+
+static func _water_feel_salience(sim) -> float:
+	if sim == null or not sim.has_method("tank_vitals_snapshot"):
+		return 0.0
+	var snap: Dictionary = sim.tank_vitals_snapshot()
+	if snap.is_empty():
+		return 0.0
+	var best: float = 0.0
+	for ch in _WATER_FEEL_CHANNELS:
+		var vital: String = String(ch["vital"])
+		if not snap.has(vital):
+			continue
+		var row: Dictionary = snap[vital]
+		var harm: float = float(ch["harm_sign"])
+		var scale: float = float(ch["scale"])
+		var pressure: float = clampf(float(row.get("deviation", 0.0)) * harm * scale, 0.0, 1.0)
+		if pressure <= 0.0:
+			continue
+		var slope: float = float(row.get("short_slope", 0.0)) * harm
+		var trend: float = 1.0 + clampf(slope * scale * 40.0, 0.0, 0.8)
+		best = maxf(best, pressure * trend)
+	if best < 0.12:
+		return 0.0
+	# Keep the old night bid's ~0.3 centre of gravity; rise toward 0.7 when
+	# a vital is far from the tank's own normal.
+	return clampf(0.18 + best * 0.52, 0.0, 0.7)
 
 
 

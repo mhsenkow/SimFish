@@ -58,6 +58,12 @@ static func _on_motion_sfx(ev: Dictionary) -> void:
 		return
 	var kind: StringName = ev.get("kind", &"")
 	var strength: float = float(ev.get("strength", 0.4))
+	# Match SimDriver._play_ambient_event: pan before the SFX so dart/strike
+	# read from the animal's world X instead of the last sim event pan.
+	var pos: Variant = ev.get("position", null)
+	if pos is Vector3 and (pos as Vector3).is_finite() \
+			and audio.has_method("set_event_world_pos"):
+		audio.set_event_world_pos(pos as Vector3)
 	match kind:
 		&"gulp":
 			if audio.has_method("play_bubble_sfx"):

@@ -59,6 +59,27 @@ func _initialize() -> void:
 		"reroll replaces cards immediately without a temporary doubled layout")
 	adopt.queue_free()
 	await process_frame
+
+	# Enlarged text: header close stays on-screen at 1.5× ui_font_scale.
+	var cfg: Node = root.get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.ui_font_scale = 1.5
+	root.content_scale_size = Vector2i(900, 600)
+	await process_frame
+	var lib_big: PanelContainer = library_script.new()
+	root.add_child(lib_big)
+	lib_big.show()
+	lib_big.position = Vector2(140, 60)
+	await _settle()
+	lib_big.size = Vector2(558, 476)
+	await _settle()
+	var close_big: Button = PanelTheme.find_header_close(lib_big)
+	t.check(close_big != null and Rect2(Vector2.ZERO, Vector2(900, 600)).encloses(close_big.get_global_rect()),
+		"enlarged-text library close stays on screen")
+	lib_big.queue_free()
+	if cfg != null:
+		cfg.ui_font_scale = 1.0
+	await process_frame
 	quit(t.finish())
 
 func _settle() -> void:

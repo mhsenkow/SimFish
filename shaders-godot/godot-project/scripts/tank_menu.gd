@@ -91,15 +91,19 @@ func _setup_top_bar() -> void:
 	var brand := PanelTheme.make_subtitle("walstad loom")
 	_top_shell.add_child(brand)
 	_top_shell.move_child(brand, 0)
-	_shelf_caption = PanelTheme.make_subtitle("Continue a living world, or start something new.")
+	_shelf_caption = PanelTheme.make_subtitle(
+		"Living tank starts a planted world. Templates show each style. Guided setup walks an empty tank.")
 	_shelf_caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# A zero-width autowrap label reports a huge minimum height and used to
+	# shove the tank grid below the window.
+	_shelf_caption.custom_minimum_size = Vector2(280, 0)
 	_top_shell.add_child(_shelf_caption)
 	_top_shell.move_child(_shelf_caption, 2)
 	_new_btn = PanelTheme.make_primary_button("+ Living tank")
-	_new_btn.tooltip_text = tr("Start a planted, stocked, established tank with gentle music and automatic feeding")
+	_new_btn.tooltip_text = tr("Recommended start: planted, stocked, already cycled")
 	_new_btn.pressed.connect(_on_living_tank_pressed)
 	var templates_btn := PanelTheme.make_secondary_button("Templates")
-	templates_btn.tooltip_text = tr("Choose a different aquarium style")
+	templates_btn.tooltip_text = tr("Preview each aquarium style, then open one")
 	templates_btn.pressed.connect(_on_new_pressed)
 
 	_guided_btn = PanelTheme.make_secondary_button("+ Guided setup")
@@ -159,12 +163,14 @@ func _confirm_quit_from_menu() -> void:
 	var center: CenterContainer = root["center"]
 	var panel := PanelContainer.new()
 	PanelTheme.apply_modal_chrome(panel)
-	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 320.0, 150.0, 0.7, 0.4)
+	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 360.0, 280.0, 0.72, 0.55)
 	center.add_child(panel)
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 12)
 	panel.add_child(vb)
+	vb.add_child(PanelTheme.make_living_preview(Color8(140, 200, 170), 1.7, 108.0))
 	vb.add_child(PanelTheme.make_title("Quit walstad loom?"))
+	vb.add_child(PanelTheme.make_subtitle("Your tanks stay on the shelf."))
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_END
 	row.add_theme_constant_override("separation", 8)
@@ -214,7 +220,7 @@ func _toggle_overflow_menu() -> void:
 
 func _apply_responsive_layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var compact: bool = vp.x < 760.0
+	var compact: bool = vp.x < 1040.0
 	var pad: Vector4 = SafeArea.insets(get_viewport())
 	var available: float = vp.x - pad.x - pad.z
 	var edge: float = maxf(16.0, (available - 1280.0) * 0.5)
@@ -225,16 +231,23 @@ func _apply_responsive_layout() -> void:
 	_delete_selected_btn.visible = not compact and not _listed_slots.is_empty()
 	_overflow_btn.visible = compact
 	_overflow_btn.text = tr("More")
-	_info_btn.visible = vp.x >= 480.0
+	_info_btn.visible = vp.x >= 900.0
+	_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_title_label.clip_text = true
 	if _top_shell != null:
 		_top_shell.offset_left = edge + pad.x
 		_top_shell.offset_right = -(edge + pad.z)
 		_top_shell.offset_top = 20.0 + pad.y
-		_top_shell.offset_bottom = _top_shell.offset_top + 132.0
+		var content_h: float = _top_shell.get_combined_minimum_size().y + 4.0
+		var shell_h: float = clampf(content_h, 108.0, 156.0)
+		_top_shell.offset_bottom = _top_shell.offset_top + shell_h
 	if _scroll != null:
 		_scroll.offset_left = edge + pad.x
 		_scroll.offset_right = -(edge + pad.z)
-		_scroll.offset_top = _top_shell.offset_bottom + 16.0
+		var header_end: float = _top_shell.offset_bottom if _top_shell != null else 132.0
+		_scroll.offset_top = header_end + 12.0
+		if _scroll.offset_top > vp.y * 0.42:
+			_scroll.offset_top = 20.0 + pad.y + 132.0
 		_scroll.offset_bottom = -(16.0 + pad.w)
 	_empty_hero.offset_left = edge + pad.x
 	_empty_hero.offset_right = -(edge + pad.z)
@@ -307,7 +320,7 @@ func _build_empty_hero() -> void:
 	hero_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(hero_title)
 	var body := PanelTheme.make_subtitle(
-		"A planted garden, living fish, gentle music. Ready to watch.")
+		"Living tank is the easy start: plants, fish, and a settled filter. Templates are other styles, with a picture of each. Guided setup is an empty tank you stock yourself.")
 	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(body)

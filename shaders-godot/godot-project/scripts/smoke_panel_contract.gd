@@ -27,6 +27,7 @@ const PANELS: Dictionary = {
 	"residents_panel.gd": "_close_residents_panel",
 	"notifications_panel.gd": "close_notifications_panel",
 	"vessel_picker.gd": "close_vessel_picker",
+	"chronicle_panel.gd": "close_chronicle_panel",
 }
 
 # Panels reached through UiPanelManager instead of a bespoke close function.

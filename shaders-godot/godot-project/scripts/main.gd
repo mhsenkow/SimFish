@@ -331,7 +331,11 @@ var _cinema_auto: bool = false            # true when the idle screensaver start
 const FOLLOW_LEAD_TIME: float = 0.4       # seconds of velocity lookahead
 const FOLLOW_LERP_K: float = 3.0
 const FOLLOW_DEADZONE: float = 0.9        # world units the subject may roam before the cam chases
+const FOLLOW_OCCLUDE_HOLD_S: float = 1.8  # HOLISTIC #025 sustained hide before nudge
+const FOLLOW_OCCLUDE_MAX: float = 0.38    # world-unit cap on orbit-target bias
 var _follow_chasing: bool = false         # HOLISTIC #027 hysteresis across the deadzone
+var _follow_los_blocked_s: float = 0.0
+var _follow_los_nudge: Vector3 = Vector3.ZERO
 # Orbit radius to restore when a CINEMATIC follow ends. 0 = nothing saved.
 var _follow_saved_radius: float = 0.0
 const CINEMA_INTERVAL_S: float = 12.0
@@ -2281,6 +2285,17 @@ func _process(dt: float) -> void:
 		hud_dim = SCREENSAVER_DIM_MODULATE
 	elif _hud_idle_seconds > HUD_IDLE_DIM_SECONDS:
 		hud_dim = HUD_DIM_MODULATE
+	# Wish #262 — night softens HUD emissives without hiding them.
+	if not screensaver and _sim != null and _sim.get("day_phase") != null:
+		var phase_n: float = fposmod(float(_sim.day_phase), 1.0)
+		var night_w: float = 0.0
+		if phase_n >= 0.55 and phase_n < 0.95:
+			night_w = 1.0 - absf(phase_n - 0.75) / 0.20
+			night_w = clampf(night_w, 0.0, 1.0)
+		if night_w > 0.05:
+			var night_soft := Color(0.82, 0.86, 0.95, lerpf(1.0, 0.72, night_w))
+			hud_dim = Color(hud_dim.r * night_soft.r, hud_dim.g * night_soft.g,
+				hud_dim.b * night_soft.b, hud_dim.a * night_soft.a)
 	if top_hud != null and top_hud.modulate != hud_dim:
 		top_hud.modulate = hud_dim
 	if right_rail != null and right_rail.modulate != hud_dim:
@@ -2394,13 +2409,18 @@ func _process(dt: float) -> void:
 			# of trailing. Free framing lets it roam within a deadzone (less
 			# jitter); lock framing keeps it rigidly centered.
 			var aim: Vector3 = _follow_target.global_position
+			# HOLISTIC #024 — slight vertical bias so fry tails stay in frame.
+			aim.y += clampf(_follow_subject_height(_follow_target) * 0.12, 0.06, 0.28)
 			var vel_v: Variant = _follow_target.get("velocity")
 			if vel_v is Vector3:
-				aim += (vel_v as Vector3) * FOLLOW_LEAD_TIME
+				# Soften velocity lead when heading lead also applies (#178).
+				aim += (vel_v as Vector3) * (FOLLOW_LEAD_TIME * 0.55)
 			# #178: lead room ahead of travel so the follow shot sells direction.
 			var head_v: Variant = _follow_target.get("heading")
 			if head_v is Vector3:
 				aim = MotionStaging.follow_lead_aim(aim, head_v as Vector3, 0.18)
+			_tick_follow_occlusion(aim, dt)
+			aim += _follow_los_nudge
 			var t: float = 1.0 - exp(-FOLLOW_LERP_K * dt)
 			if _follow_lock:
 				target = target.lerp(aim, t)
@@ -2424,21 +2444,24 @@ func _process(dt: float) -> void:
 					var catch_k: float = FOLLOW_LERP_K * (1.35 if burst_v > 0.1 or startle_v > 0.1 else 1.0)
 					t = 1.0 - exp(-catch_k * dt)
 					target = target.lerp(want, t)
-			# VISUAL_DIRECTIONS #8 — and actually GET CLOSE. Following used to
-			# move only the target, so clicking a fish re-centred the same wide
-			# shot on a 0.6-unit animal 20 units away. Eased at half the
-			# tracking rate so the push-in reads as a camera move rather than a
-			# snap, and radius_for_subject can only ever bring it in.
-			# The ceiling is the shot the player had, not the current radius —
-			# clamping against a radius the ease is already shrinking would
-			# ratchet the camera inward every frame.
+			# VISUAL_DIRECTIONS #8 + HOLISTIC #024 — size-aware close follow with
+			# pullback when a centerpiece would fill the frame at the saved shot.
+			var subj_h: float = _follow_subject_height(_follow_target)
 			var ceil_r: float = _follow_saved_radius if _follow_saved_radius > 0.0 else radius
 			var want_r: float = CameraController.radius_for_subject(
-				_follow_subject_height(_follow_target),
+				subj_h,
 				float(camera.fov) if camera != null else 45.0,
-				ceil_r)
+				ceil_r,
+				CameraController.follow_subject_frac(subj_h),
+				true)
+			var cfg_f := _cfg()
+			var span_f: float = 8.0
+			if cfg_f != null:
+				span_f = maxf(float(cfg_f.get("tank_half_w")),
+					float(cfg_f.get("tank_half_d")) * 0.85)
+			want_r = maxf(want_r, CameraController.follow_radius_floor(subj_h, span_f))
 			radius = lerpf(radius, want_r, 1.0 - exp(-FOLLOW_LERP_K * 0.5 * dt))
-			_apply_camera()
+			_apply_camera(true)
 			
 	if _follow_mode != FollowMode.OFF or (_portal_info_panel != null and _portal_info_panel.visible):
 		_update_portal_pip()
@@ -2723,6 +2746,7 @@ func _process_mouse_input(dt: float) -> void:
 				_ui_toggle_side(UiPanelManager.SIDE_SOUND)
 		_key_was_pressed[KEY_M] = m_down
 		_handle_shortcut(KEY_O, func(): _ui_toggle_side(UiPanelManager.SIDE_SETTINGS))
+		_handle_shortcut(KEY_R, func(): _ui_toggle_side(UiPanelManager.SIDE_RENDER))
 		if _aquascape.is_active:
 			_handle_shortcut(KEY_9, func(): _aquascape.set_tool("block"))
 			_handle_shortcut(KEY_0, func(): _aquascape.set_tool("eraser"))
@@ -2882,6 +2906,8 @@ func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
 
 func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
 	if _sim == null or _aquascape.is_active:
+		return false
+	if _mouse_over_portal_card():
 		return false
 	if display == null or not display.get_global_rect().has_point(mouse_pos):
 		_show_feed_toast("Click inside the tank view")
@@ -3183,7 +3209,7 @@ func _refresh_controls_hint() -> void:
 	if _is_mobile():
 		controls_hint.text = "drag orbit · pinch zoom · tap water to feed · Care in footer · tap creature to select · photo"
 	else:
-		controls_hint.text = "orbit · Feed · Care · click creature to select · F12 photo · ? help"
+		controls_hint.text = "orbit · Feed · Care · click creature to select · F12 photo · H hides HUD · ? help"
 
 
 func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> int:
@@ -3842,13 +3868,18 @@ func _confirm_quit_game() -> void:
 	var center: CenterContainer = root["center"]
 	var panel := PanelContainer.new()
 	PanelTheme.apply_modal_chrome(panel)
-	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 320.0, 160.0, 0.7, 0.4)
+	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 380.0, 320.0, 0.72, 0.62)
 	center.add_child(panel)
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 12)
 	panel.add_child(vb)
+	var shot: Texture2D = _active_tank_shot()
+	if shot != null:
+		vb.add_child(PanelTheme.make_shot_preview(shot, 128.0))
+	else:
+		vb.add_child(PanelTheme.make_living_preview(Color8(140, 200, 170), 2.4, 128.0))
 	vb.add_child(PanelTheme.make_title("Quit walstad loom?"))
-	vb.add_child(PanelTheme.make_subtitle("Progress autosaves. You can reopen from Steam anytime."))
+	vb.add_child(PanelTheme.make_subtitle("This tank autosaves. Reopen it from the shelf anytime."))
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_END
 	row.add_theme_constant_override("separation", 8)
@@ -3866,6 +3897,19 @@ func _confirm_quit_game() -> void:
 	cancel.focus_neighbor_right = quit_btn.get_path()
 	quit_btn.focus_neighbor_left = cancel.get_path()
 	cancel.call_deferred("grab_focus")
+
+
+func _active_tank_shot() -> Texture2D:
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves == null or not saves.has_method("thumbnail_path"):
+		return null
+	var path: String = String(saves.thumbnail_path(int(saves.active_slot)))
+	if path == "" or not FileAccess.file_exists(path):
+		return null
+	var img: Image = preload("res://scripts/tank_thumbnail.gd").load_image(path)
+	if img == null:
+		return null
+	return ImageTexture.create_from_image(img)
 
 
 func _quit_to_desktop() -> void:
@@ -3991,6 +4035,9 @@ func _click_hits_interactive_hud(mouse_pos: Vector2) -> bool:
 	if stats_bar != null and stats_bar.visible \
 			and stats_bar.get_global_rect().has_point(mouse_pos):
 		return true
+	if portal_container != null and portal_container.visible \
+			and portal_container.get_global_rect().has_point(mouse_pos):
+		return true
 	if left_cluster != null and left_cluster.visible \
 			and left_cluster.get_global_rect().has_point(mouse_pos):
 		return true
@@ -4029,6 +4076,28 @@ func _toggle_pause() -> void:
 	_haptic(12)
 
 
+func _refresh_pause_chrome() -> void:
+	# Wish #263 — pause must be unmistakable in the footer legend.
+	if controls_hint == null:
+		return
+	var paused: bool = _sim != null and float(_sim.time_scale) <= 0.0
+	if paused:
+		controls_hint.text = "PAUSED — P to resume · Esc closes panels · F1 help"
+		controls_hint.visible = true
+		controls_hint.modulate = Color(1.0, 0.92, 0.55, 1.0)
+		controls_hint.add_theme_color_override("font_color", Color(1.0, 0.9, 0.45))
+		return
+	# Don't clobber the motion-debug legend while it's active.
+	if world != null and world.has_method("motion_debug_active") \
+			and bool(world.motion_debug_active()):
+		return
+	if controls_hint.text.begins_with("Motion debug ON"):
+		return
+	controls_hint.modulate = Color.WHITE
+	controls_hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+	_refresh_controls_hint()
+
+
 func _toggle_motion_debug() -> void:
 	if world == null or not world.has_method("toggle_motion_debug"):
 		return
@@ -4036,6 +4105,8 @@ func _toggle_motion_debug() -> void:
 	if controls_hint != null:
 		controls_hint.text = "Motion debug ON — cyan=preferred_y green=home_y gold=band red=wall push (M)"
 		controls_hint.visible = on
+		if not on:
+			_refresh_pause_chrome()
 	_haptic(8)
 
 
@@ -4491,12 +4562,48 @@ func _finish_dance_capture() -> void:
 func _follow_subject_height(creature: Node) -> float:
 	if creature == null or not is_instance_valid(creature):
 		return 0.6
+	# HOLISTIC #024 — live size so fry and grown adults frame differently.
+	if creature.has_method("effective_size"):
+		return clampf(float(creature.call("effective_size")) * 5.2, 0.25, 3.0)
 	var scale_v: Variant = creature.get("adult_voxel_scale")
 	if scale_v != null:
-		# Same conversion the blob-shadow radius uses, doubled for full body
-		# height rather than a footprint radius.
 		return clampf(float(scale_v) * 5.2, 0.25, 3.0)
 	return 0.6
+
+
+func _tick_follow_occlusion(subject_pos: Vector3, dt: float) -> void:
+	# HOLISTIC #025 — sustained plant occlusion nudges orbit aim; intentional
+	# hiding (sleep / rest / flee) leaves the subject visually hidden.
+	if camera == null or _follow_target == null:
+		_follow_los_blocked_s = 0.0
+		_follow_los_nudge = _follow_los_nudge.lerp(Vector3.ZERO, 1.0 - exp(-3.0 * dt))
+		return
+	var intentional_hide: bool = bool(_follow_target.get("_asleep"))
+	var mode_v: Variant = _follow_target.get("current_mode")
+	if mode_v != null:
+		var mode_i: int = int(mode_v)
+		# Fish.Mode: FLEE=4, REST=5 — intentional hide stays visually hidden.
+		if mode_i == 4 or mode_i == 5:
+			intentional_hide = true
+	var plants: Array = []
+	if _sim != null and _sim.has_method("query_plants_in_radius"):
+		plants = _sim.query_plants_in_radius(subject_pos, 5.5)
+	var blocked: bool = not intentional_hide \
+			and not MotionStaging.clear_to_camera(subject_pos, camera, plants)
+	if blocked:
+		_follow_los_blocked_s += dt
+	else:
+		_follow_los_blocked_s = maxf(0.0, _follow_los_blocked_s - dt * 1.6)
+	var want_nudge: Vector3 = Vector3.ZERO
+	if blocked and _follow_los_blocked_s >= FOLLOW_OCCLUDE_HOLD_S:
+		var ideal: Vector3 = MotionStaging.prefer_visible_site(
+			subject_pos, camera, plants, 0.5)
+		# Fish would move toward `ideal`; camera target moves opposite a little
+		# so the subject peeks past foliage without chasing every leaf.
+		var delta: Vector3 = ideal - subject_pos
+		want_nudge = (-delta * 0.45).limit_length(FOLLOW_OCCLUDE_MAX)
+	var nk: float = 1.0 - exp(-FOLLOW_LERP_K * 0.35 * dt)
+	_follow_los_nudge = _follow_los_nudge.lerp(want_nudge, nk)
 
 
 func follow_creature(creature: Node, mode: int = FollowMode.PIP) -> void:
@@ -4553,6 +4660,8 @@ func clear_follow() -> void:
 	_follow_target = null
 	_follow_mode = FollowMode.OFF
 	_follow_chasing = false
+	_follow_los_blocked_s = 0.0
+	_follow_los_nudge = Vector3.ZERO
 	_cinema_active = false
 	_clear_follow_thought_ui()
 	if portal_container != null:
@@ -6655,6 +6764,9 @@ func _update_portal_pip() -> void:
 					personality_v, stable_key)
 			if epithet != "":
 				c_name = "%s %s" % [c_name, epithet]
+		var spec_title := _creature_label(target_node).capitalize()
+		if spec_title != "" and not c_name.to_lower().contains(spec_title.to_lower()):
+			c_name = "%s · %s" % [c_name, spec_title]
 		if _portal_name_lbl.text != c_name:
 			_portal_name_lbl.text = c_name
 
@@ -6735,7 +6847,7 @@ func _update_portal_pip() -> void:
 func _build_portal_info_ui() -> void:
 	if portal_container == null:
 		return
-	portal_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	portal_container.mouse_filter = Control.MOUSE_FILTER_STOP
 
 	# Frosted-glass background — a shaded ColorRect behind everything, sized to
 	# the card by _relayout_portal. Added FIRST so it draws behind the content.
@@ -7443,6 +7555,7 @@ func _input(event: InputEvent) -> void:
 				# Clicks on the magnifier don't pick or drop food; a
 				# double-click there promotes the follow to cinematic.
 				if _mouse_over_portal_card():
+					_press_skip_feed = true
 					if mb.double_click and _mouse_over_porthole():
 						_toggle_follow_presentation()
 					return
@@ -7793,6 +7906,7 @@ func _setup_speed_hud() -> void:
 func _sync_speed_hud() -> void:
 	if _mobile_hud != null and _sim != null and _mobile_hud.has_method("sync_time_scale"):
 		_mobile_hud.sync_time_scale(float(_sim.time_scale))
+	_refresh_pause_chrome()
 
 
 func _setup_mobile_ui() -> void:
@@ -7845,11 +7959,22 @@ func _setup_mobile_ui() -> void:
 	call_deferred("_maybe_show_tutorial")
 
 
-func _apply_camera() -> void:
+func _apply_camera(cinematic_follow: bool = false) -> void:
 	if camera == null:
 		return
 	if _current_projection_id == "perspective":
-		radius = _clamp_radius_to_frame(radius)
+		if cinematic_follow and _follow_mode == FollowMode.CINEMATIC:
+			# HOLISTIC #024 — allow closer than hero floor so fry stay readable.
+			var cfg_cf := _cfg()
+			var span_cf: float = 8.0
+			if cfg_cf != null:
+				span_cf = maxf(float(cfg_cf.get("tank_half_w")),
+					float(cfg_cf.get("tank_half_d")) * 0.85)
+			var floor_cf: float = CameraController.follow_radius_floor(
+				_follow_subject_height(_follow_target), span_cf)
+			radius = clampf(radius, floor_cf, MAX_RADIUS)
+		else:
+			radius = _clamp_radius_to_frame(radius)
 	var hero_yaw: float = yaw
 	var hero_pitch: float = pitch
 	var mc := get_node_or_null("/root/MusicContext")
@@ -8123,7 +8248,7 @@ func _render_header() -> void:
 	else:
 		var fish_sub: String
 		if fish_total <= 0:
-			fish_sub = "—"
+			fish_sub = "none"
 		elif fish_cap > 0:
 			fish_sub = _fauna_age_sub(fish_adults, fish_juveniles, fish_fry, fish_total, fish_cap)
 		else:
@@ -8131,10 +8256,10 @@ func _render_header() -> void:
 		_update_chip("fish", str(fish_total), fish_sub, true, over_cap)
 		_update_chip("shrimp", str(shrimp_total),
 			_fauna_age_sub(shrimp_adults, shrimp_juveniles, shrimp_fry, shrimp_total, 0)
-				if shrimp_total > 0 else "—",
+				if shrimp_total > 0 else "no shrimp",
 			true, false)
 		_update_chip("snails", str(snail_total),
-			("%d adults · %d babies" % [snail_adults, snail_babies]) if snail_total > 0 else "—",
+			("%d adults · %d babies" % [snail_adults, snail_babies]) if snail_total > 0 else "no snails",
 			true, false)
 
 	# Flora chip.
@@ -8212,12 +8337,13 @@ func _render_header() -> void:
 		has_alert = true
 		alert_value = "bleach"
 		alert_sub = "corals"
-	_update_chip("alert", alert_value, alert_sub, has_alert, true)
+	_update_chip("alert", alert_value, alert_sub, has_alert, has_alert, o2_pct < 30)
 
 	# Aquascape mode replaces the state chip's sublabel with the tool name so
 	# the player sees the active tool at a glance.
 	if _aquascape.is_active:
 		_update_chip("state", "AQUA", _aquascape_tool_label(), true, false)
+	_fit_stat_chips()
 
 
 func _aquascape_tool_label() -> String:
@@ -8273,6 +8399,8 @@ func _build_hud_chips() -> void:
 	var bar: HBoxContainer = stats_bar.get_node_or_null("HBox") as HBoxContainer
 	if bar == null:
 		return
+	stats_bar.clip_contents = true
+	bar.clip_contents = true
 	# Clear any pre-existing children (re-entrant safety in case _ready runs twice).
 	for c in bar.get_children():
 		c.queue_free()
@@ -8283,7 +8411,7 @@ func _build_hud_chips() -> void:
 	var defs: Array = [
 		{"key": "mood",   "icon": UiIcons.chip_glyph("mood"), "color": Color8(170, 220, 170), "tier": "primary"},
 		{"key": "water",  "icon": UiIcons.chip_glyph("water"), "color": Color8(127, 183, 216), "tier": "primary"},
-		{"key": "alert",  "icon": UiIcons.chip_glyph("alert"), "color": Color8(224, 112, 112), "tier": "primary"},
+		{"key": "alert",  "icon": UiIcons.chip_glyph("alert"), "color": Color8(224, 176, 96), "tier": "primary"},
 		{"key": "state",  "icon": UiIcons.chip_glyph("state"), "color": Color8(154, 168, 200), "tier": "secondary"},
 		{"key": "fish",   "icon": UiIcons.chip_glyph("fish"), "color": Color8(214, 176, 112), "tier": "secondary"},
 		{"key": "flora",  "icon": UiIcons.chip_glyph("flora"), "color": Color8(134, 192, 132), "tier": "secondary"},
@@ -8316,12 +8444,31 @@ func _build_hud_chips() -> void:
 
 func _chip_tooltip(key: String) -> String:
 	match key:
-		"state": return "Sim day & time scale — tap for cycle history"
-		"mood": return "Ecosystem mood — tap for story log"
-		"water": return "N-cycle & O₂ — tap for chemistry details"
-		"alert": return "Active alerts — tap for guidance"
-		"fish", "shrimp", "snails", "flora", "morphs": return "Population — tap for sparkline"
+		"state": return "■ Sim day & time scale — tap for cycle history"
+		"mood": return "● Ecosystem mood — tap for story log"
+		"water": return "◆ N-cycle & O₂ (ppm / saturation) — tap for chemistry"
+		"alert": return "▲ Active alerts — tap for guidance & Care"
+		"fish": return "◉ Fish population — tap for sparkline"
+		"shrimp": return "◇ Shrimp population — tap for sparkline"
+		"snails": return "○ Snail population — tap for sparkline"
+		"flora": return "♣ Plant cover — tap for sparkline"
+		"morphs": return "✦ Unique morphs — tap for sparkline"
 	return "Tap for details"
+
+
+# Wish #261 — shape glyph so chips stay distinct without hue alone.
+func _chip_shape_glyph(key: String) -> String:
+	match key:
+		"mood": return "●"
+		"water": return "◆"
+		"alert": return "▲"
+		"state": return "■"
+		"fish": return "◉"
+		"shrimp": return "◇"
+		"snails": return "○"
+		"flora": return "♣"
+		"morphs": return "✦"
+	return "•"
 
 
 func _pulse_stat_chips_once() -> void:
@@ -8370,6 +8517,16 @@ func _make_chip(icon: String, accent: Color, key: String = "", tier: String = "s
 	icon_wrap.add_child(icon_lbl)
 	hb.add_child(icon_wrap)
 
+	# Color-blind redundancy: a small shape glyph rides beside the icon.
+	if not key.is_empty():
+		var shape := Label.new()
+		shape.name = "ShapeGlyph"
+		shape.text = _chip_shape_glyph(key)
+		PanelTheme.apply_font(shape, PanelTheme.FONT_MONO, PanelTheme.SIZE_CAPTION)
+		shape.add_theme_color_override("font_color", accent.lerp(PanelTheme.VALUE_FG, 0.35))
+		shape.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		hb.add_child(shape)
+
 	# Value → Mono so digits line up; size carries the tier hierarchy.
 	var value_lbl := Label.new()
 	value_lbl.add_theme_color_override("font_color", PanelTheme.VALUE_FG)
@@ -8388,8 +8545,11 @@ func _make_chip(icon: String, accent: Color, key: String = "", tier: String = "s
 	pc.set_meta("sublabel_label", sublabel_lbl)
 	pc.set_meta("accent", accent)
 	pc.set_meta("tier", tier)
+	pc.focus_mode = Control.FOCUS_ALL
+	pc.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	if not key.is_empty():
 		pc.tooltip_text = _chip_tooltip(key)
+		pc.accessibility_name = _chip_tooltip(key)
 	return pc
 
 
@@ -8397,7 +8557,7 @@ func _make_chip(icon: String, accent: Color, key: String = "", tier: String = "s
 # threshold is crossed (low O₂, paused, etc.); `visible_` hides the whole chip
 # when the metric isn't relevant (e.g. no morphs yet).
 func _update_chip(key: String, value: String, sublabel: String,
-		visible_: bool, warn: bool) -> void:
+		visible_: bool, warn: bool, critical: bool = false) -> void:
 	var chip: Control = _chips.get(key, null) as Control
 	if chip == null:
 		return
@@ -8406,11 +8566,113 @@ func _update_chip(key: String, value: String, sublabel: String,
 		return
 	var v: Label = chip.get_meta("value_label", null) as Label
 	var s: Label = chip.get_meta("sublabel_label", null) as Label
-	if v != null:
+	if v != null and v.text != value:
 		v.text = value
 	if s != null:
-		s.text = _truncate_chip_sublabel(sublabel, key)
-	chip.modulate = Color(1.0, 0.7, 0.7) if warn else Color(1.0, 1.0, 1.0)
+		var sub: String = _truncate_chip_sublabel(sublabel, key)
+		if s.text != sub:
+			s.text = sub
+	# PLAYER_WISH #244 — red is dying; amber is urgent-but-not-dying.
+	var warn_mod: Color = Color(1.0, 1.0, 1.0)
+	if critical:
+		warn_mod = Color(1.0, 0.62, 0.62)
+	elif warn:
+		warn_mod = Color(1.0, 0.86, 0.62) if key == "alert" else Color(1.0, 0.7, 0.7)
+	if chip.modulate != warn_mod:
+		chip.modulate = warn_mod
+
+
+func _stats_bar_inner_width() -> float:
+	if stats_bar == null:
+		return 0.0
+	var vp_w: float = get_viewport().get_visible_rect().size.x
+	var right_edge: float = vp_w + stats_bar.offset_right
+	return maxf(0.0, right_edge - stats_bar.offset_left - 12.0)
+
+
+func _chip_row_min_width() -> float:
+	if stats_bar == null:
+		return 0.0
+	var bar: HBoxContainer = stats_bar.get_node_or_null("HBox") as HBoxContainer
+	if bar == null:
+		return 0.0
+	return bar.get_combined_minimum_size().x
+
+
+func _day_clock_gap() -> Control:
+	var bar: HBoxContainer = stats_bar.get_node_or_null("HBox") as HBoxContainer
+	if bar == null:
+		return null
+	var gap: Control = bar.get_node_or_null("DayClockGap") as Control
+	if gap == null:
+		gap = Control.new()
+		gap.name = "DayClockGap"
+		gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		bar.add_child(gap)
+	return gap
+
+
+func _fit_stat_chips() -> void:
+	if stats_bar == null or _chips.is_empty():
+		return
+	var avail: float = _stats_bar_inner_width()
+	if avail < 8.0:
+		return
+	# The day strip keeps a slot on the right. Chips fit in what remains,
+	# so a full set of counts cannot push the cycle off the header.
+	var hide_clock: bool = _photo_framing or _immersive_mode
+	var clock_w: float = 0.0
+	if not hide_clock:
+		if avail >= 760.0:
+			clock_w = 320.0
+		elif avail >= 560.0:
+			clock_w = 240.0
+	var gap: Control = _day_clock_gap()
+	if gap != null:
+		gap.custom_minimum_size.x = clock_w
+	var compact_hide: Array[String] = ["shrimp", "snails", "morphs"]
+	var show_subs: bool = _hud_layout == "wide" and not _aquascape.is_active
+	for key in _chips.keys():
+		var chip: Control = _chips[key] as Control
+		if chip == null:
+			continue
+		if _hud_layout == "compact" and key in compact_hide:
+			chip.visible = false
+		var sub: Label = chip.get_meta("sublabel_label", null) as Label
+		if sub != null:
+			sub.visible = show_subs and chip.visible
+	if _chip_row_min_width() > avail:
+		for key in _chips.keys():
+			var chip: Control = _chips[key] as Control
+			if chip == null:
+				continue
+			var sub: Label = chip.get_meta("sublabel_label", null) as Label
+			if sub != null:
+				sub.visible = false
+	for key in ["morphs", "snails", "shrimp", "flora"]:
+		if _chip_row_min_width() <= avail:
+			break
+		var chip: Control = _chips.get(key, null) as Control
+		if chip != null and chip.visible:
+			chip.visible = false
+	_place_day_clock(clock_w)
+
+
+func _place_day_clock(clock_w: float) -> void:
+	_ensure_day_clock()
+	if _day_clock == null or not is_instance_valid(_day_clock) or stats_bar == null:
+		return
+	if clock_w < 220.0:
+		_day_clock.visible = false
+		return
+	var vp_w: float = get_viewport().get_visible_rect().size.x
+	var right_edge: float = vp_w + stats_bar.offset_right - 6.0
+	_day_clock.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_day_clock.visible = true
+	_day_clock.offset_left = right_edge - clock_w
+	_day_clock.offset_right = right_edge
+	_day_clock.offset_top = stats_bar.offset_top + 5.0
+	_day_clock.offset_bottom = _day_clock.offset_top + 36.0
 
 
 func _truncate_chip_sublabel(text: String, key: String) -> String:
@@ -9105,8 +9367,10 @@ func _apply_rail_dock_layout() -> void:
 		right_rail.offset_top = maxf((44.0 if compact else 48.0) + pad.y,
 			_measured_top_bar_bottom() + HudLayout.GAP)
 		right_rail.offset_right = -(gutter + pad.z)
-		right_rail.offset_bottom = -maxf((76.0 if compact else 40.0) + pad.w,
-			_measured_footer_h(vp_r) + HudLayout.GAP)
+		# Extra HudLayout.GAP so FooterBar×RightRail never inter-overlap at
+		# narrow desktop widths (ledger #007 residual).
+		right_rail.offset_bottom = -maxf((80.0 if compact else 48.0) + pad.w,
+			_measured_footer_h(vp_r) + HudLayout.GAP * 2.0)
 
 
 # ---- HUD regions ----------------------------------------------------------
@@ -9517,6 +9781,8 @@ func _apply_hud_layout() -> void:
 	# ends, not from a literal. The cluster sizes to its own contents, so a
 	# longer label, a bigger UI scale or a translated string used to slide
 	# the stats chips straight over the Menu and fullscreen buttons.
+	if left_cluster != null:
+		left_cluster.reset_size()
 	var cluster_w: float = 0.0
 	if left_cluster != null:
 		cluster_w = maxf(left_cluster.size.x,
@@ -9542,25 +9808,18 @@ func _apply_hud_layout() -> void:
 		var portal_open: bool = portal_container != null and portal_container.visible
 		var above_layout: bool = _portal_layout == PortalLayout.ABOVE
 		var right_cap: float = PanelTheme.portal_chrome_inset(portal_open, above_layout)
-		right_cap = maxf(right_cap, w * 0.22)
 		stats_bar.offset_left = left_inset
 		stats_bar.offset_right = -(right_cap + pad.z)
 		stats_bar.offset_top = 4.0 + pad.y
-		stats_bar.offset_bottom = 50.0 + pad.y
+		# One row. A full set of subtitles used to grow this rect and drop the
+		# day strip onto a second, misaligned line.
+		stats_bar.offset_bottom = stats_bar.offset_top + 46.0
+		stats_bar.clip_contents = true
 
 	if layout_changed:
 		_render_header()
 	_apply_ecology_hud_layout()
-	_ensure_day_clock()
-	if _day_clock != null and is_instance_valid(_day_clock):
-		var clock_w: float = minf(320.0, maxf(220.0, w - left_inset - 16.0))
-		_day_clock.offset_left = left_inset
-		_day_clock.offset_top = stats_bar.offset_bottom + 4.0
-		_day_clock.offset_right = _day_clock.offset_left + clock_w
-		_day_clock.offset_bottom = _day_clock.offset_top + 34.0
-		_day_clock.visible = not _photo_framing and not _immersive_mode
-		if top_hud != null:
-			top_hud.offset_bottom = maxf(top_hud.offset_bottom, _day_clock.offset_bottom)
+	_fit_stat_chips()
 	_layout_photo_chrome()
 
 
@@ -9917,12 +10176,20 @@ func _toggle_rail_flyout(group_id: String, anchor: Button) -> void:
 	_rail_flyout.set_meta("group", group_id)
 	var items: Array[Dictionary] = _rail_flyout_items(group_id)
 	# Same header as every popover: group name + the × close.
+	var flyout_title: String = group_id.capitalize()
+	match group_id:
+		"create": flyout_title = tr("Create")
+		"world": flyout_title = tr("World")
+		"appearance": flyout_title = tr("Look")
+		"system": flyout_title = tr("System")
+		"alerts": flyout_title = tr("Alerts")
 	_rail_flyout_vbox.add_child(PanelTheme.make_chip_popup_header(
-		tr(group_id.capitalize()), func(): _rail_flyout.visible = false))
+		flyout_title, func(): _rail_flyout.visible = false))
 	for item in items:
 		var b := PanelTheme.make_menu_item_button(String(item.get("label", "?")))
 		b.tooltip_text = String(item.get("tip", ""))
-		b.custom_minimum_size = Vector2(200, 32)
+		b.custom_minimum_size = Vector2(220, 34)
+		b.focus_mode = Control.FOCUS_ALL
 		b.pressed.connect(func():
 			_rail_flyout.visible = false
 			var action: Callable = item.get("action")
@@ -10537,13 +10804,39 @@ func _show_water_chemistry_popup(_chip_color: Color) -> void:
 	_chip_popup_key = "water"
 
 
+var _alert_care_btn: Button = null
+
+
 func _ensure_alert_popup() -> void:
 	if _alert_popup != null and is_instance_valid(_alert_popup):
 		return
 	_alert_popup = ChipPopup.create(tr("Tank alert"),
-		Color8(224, 112, 112), _close_chip_popups)
+		Color8(224, 176, 96), _close_chip_popups)
 	_alert_detail = _alert_popup.add_detail_label()
+	# Wish #258 — deep-link into Care so guidance can become action.
+	var care_row := HBoxContainer.new()
+	care_row.alignment = BoxContainer.ALIGNMENT_END
+	care_row.add_theme_constant_override("separation", 8)
+	_alert_popup.body.add_child(care_row)
+	_alert_care_btn = PanelTheme.make_primary_button(tr("Open Care"))
+	_alert_care_btn.pressed.connect(_on_alert_open_care)
+	care_row.add_child(_alert_care_btn)
 	add_child(_alert_popup)
+
+
+func _on_alert_open_care() -> void:
+	_close_chip_popups()
+	var kind: String = _current_alert_kind()
+	match kind:
+		"waste", "ammonia", "nitrite", "algae":
+			_on_care_water_pressed()
+		"low_o2", "bleach":
+			_on_care_filter_pressed()
+		_:
+			_on_care_water_pressed()
+	if _care_dock != null:
+		_care_dock.visible = true
+		_pulse_care_dock()
 
 
 func _current_alert_kind() -> String:
@@ -10571,6 +10864,8 @@ func _show_alert_guidance_popup(_chip_color: Color) -> void:
 		_show_water_chemistry_popup(_chip_color)
 		return
 	_ensure_alert_popup()
+	var accent: Color = Color8(224, 112, 112) if kind == "low_o2" else Color8(224, 176, 96)
+	_alert_popup.add_theme_stylebox_override("panel", ChipPopup.stylebox(accent))
 	var lines: PackedStringArray = OnboardingLegibility.alert_guidance(kind, _stats)
 	_alert_detail.text = "\n".join(lines)
 	if kind in ["bleach", "ammonia", "nitrite", "low_o2"]:
@@ -10579,7 +10874,8 @@ func _show_alert_guidance_popup(_chip_color: Color) -> void:
 		for wl in OnboardingLegibility.water_detail_lines(_stats):
 			lines.append(wl)
 		_alert_detail.text = "\n".join(lines)
-	_alert_popup.custom_minimum_size = _chip_popup_size_for_lines(lines.size(), 260.0)
+	# Extra room for the Care deep-link row under the guidance text.
+	_alert_popup.custom_minimum_size = _chip_popup_size_for_lines(lines.size() + 2, 280.0)
 	_alert_popup.size = _alert_popup.custom_minimum_size
 	_position_chip_popup(_alert_popup, "alert")
 	_alert_popup.visible = true
@@ -13032,7 +13328,9 @@ func _show_coachmark_step(step: int) -> void:
 	_coachmark_overlay.name = "CoachmarkOverlay"
 	_coachmark_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_coachmark_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-	_coachmark_overlay.z_index = 490
+	# Wish #279 — use the theme band so chips/toasts stay below coachmarks
+	# and walkthrough/tutorials can still layer above when needed.
+	_coachmark_overlay.z_index = PanelTheme.Z_COACHMARK
 	add_child(_coachmark_overlay)
 	move_child(_coachmark_overlay, get_child_count() - 1)
 	var panel := PanelContainer.new()

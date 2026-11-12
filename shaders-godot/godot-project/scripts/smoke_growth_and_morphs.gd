@@ -182,7 +182,19 @@ func _init() -> void:
 	# A guppy morph is the same fish in a different colour. If it restyled
 	# the body, half a guppy colony would render as disc-shaped reef fish.
 	t.check(not M.restyles_body("guppy"), "guppy morphs are colour-only")
+	t.check(not M.restyles_body("molly"), "molly morphs are colour-only")
+	t.check(not M.restyles_body("platy"), "platy morphs are colour-only")
 	t.check(M.restyles_body("reef"), "reef morphs still restyle the body")
+	t.check(Cfg.SPECIES_LIBRARY.has("black_balloon_molly"), "balloon molly is playable")
+	t.check(Cfg.SPECIES_LIBRARY.has("angelfish"), "angelfish is playable")
+	for preset_key in Cfg.TANK_PRESETS.keys():
+		var stocking: Dictionary = Cfg.TANK_PRESETS[preset_key].get("stocking", {})
+		for species_name in stocking.keys():
+			var sid: String = String(species_name)
+			if sid in ["shrimp", "snail"]:
+				continue
+			t.check(Cfg.SPECIES_LIBRARY.has(sid),
+				"%s stocks a real species %s" % [preset_key, sid])
 
 	# --- the guppy species actually opts in --------------------------------
 	var guppy: Dictionary = Cfg.SPECIES_LIBRARY["guppy"]["genome"]

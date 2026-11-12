@@ -165,7 +165,8 @@ static func make_room(color: Color, haze_strength: float = 0.65,
 	# 24% wobble is a whole rung, and a flat plaster wall came out as
 	# salt-and-pepper across two browns. Sub-rung grain is grain; supra-rung
 	# grain is noise.
-	m.set_shader_parameter("grain_variation", 0.18)
+	# HOLISTIC #072 — quieter room grain so the aquarium keeps first glance.
+	m.set_shader_parameter("grain_variation", 0.11)
 	_room_mat_cache[key] = m
 	return m
 

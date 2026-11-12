@@ -3329,6 +3329,22 @@ func _apply_substrate_fidelity_strata() -> void:
 		mulm = clampf(float(sim.waste.size()) / 40.0, 0.0, 1.0)
 	params["detritus_amount"] = clampf(
 		float(params.get("detritus_amount", 0.25)) + mulm * 0.35, 0.0, 1.0)
+	# HOLISTIC #061 — slope_hint from real terrain bed span, not a decorative constant.
+	if terrain_grid != null and terrain_grid.has_method("surface_y_at"):
+		var y_min: float = INF
+		var y_max: float = -INF
+		for ix in 5:
+			for iz in 4:
+				var sx: float = lerpf(-TANK_HALF_W * 0.85, TANK_HALF_W * 0.85, float(ix) / 4.0)
+				var sz: float = lerpf(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, float(iz) / 3.0)
+				var sy: float = float(terrain_grid.surface_y_at(sx, sz))
+				y_min = minf(y_min, sy)
+				y_max = maxf(y_max, sy)
+		if y_max > y_min:
+			var bed_h: float = maxf(absf(SUBSTRATE_DEPTH), 0.35)
+			params["slope_hint"] = clampf((y_max - y_min) / bed_h, 0.0, 1.35)
+			params["bed_top_y"] = y_max
+			params["bed_bottom_y"] = minf(float(params.get("bed_bottom_y", 0.0)), y_min)
 	TankFidelityRuntime.apply_substrate_strata(params)
 
 
@@ -7088,6 +7104,11 @@ func _sync_glass_lighting(dl: float, fixture: float, deep_night: float,
 	_glass_material_ref.set_shader_parameter("rim_chrome", rim)
 	_glass_material_ref.set_shader_parameter("water_surface_y", WATER_HEIGHT)
 	_glass_material_ref.set_shader_parameter("caustic_band", caustic)
+	# HOLISTIC #055 — prism vs curved face-on veil (shader default is prism-safe).
+	var veil: float = 0.32 if shape_id < 0.5 else 0.40
+	_glass_material_ref.set_shader_parameter("face_veil", veil)
+	_glass_material_ref.set_shader_parameter("corner_ghost",
+		0.18 if shape_id < 0.5 else 0.10)
 
 
 func _sync_light_beam_visibility(on: bool, color: Color = Color.WHITE) -> void:
@@ -10141,7 +10162,8 @@ func _build_room_environment() -> void:
 	var desk_dark_mat: ShaderMaterial = VoxelMat.make_room(desk_color.darkened(0.18), 0.55, haze_tint)
 	var desk_mid_mat: ShaderMaterial = VoxelMat.make_room(desk_color.darkened(0.08), 0.55, haze_tint)
 	var desk_light_mat: ShaderMaterial = VoxelMat.make_room(desk_color.lightened(0.10), 0.55, haze_tint)
-	var wall_mat: ShaderMaterial = VoxelMat.make_room(wall_color, 0.65, haze_tint)
+	# HOLISTIC #072 — quieter wall haze than desk so the tank keeps first glance.
+	var wall_mat: ShaderMaterial = VoxelMat.make_room(wall_color, 0.52, haze_tint)
 	var accent_mat: ShaderMaterial = VoxelMat.make_room(accent_color, 0.50, haze_tint)
 
 	# Desk surface. Three-ish-voxel-thick wooden slab the tank sits on,

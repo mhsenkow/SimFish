@@ -30,7 +30,13 @@ static func stats_left_inset(cluster_left: float, cluster_width: float,
 	var measured: float = cluster_left + maxf(0.0, cluster_width) + CLUSTER_GAP
 	var want: float = maxf(MIN_INSET + safe_pad_x, measured)
 	if viewport_w > 1.0:
-		want = minf(want, viewport_w * MAX_INSET_FRAC)
+		var ceiling: float = viewport_w * MAX_INSET_FRAC
+		# Follow a real cluster past the old ceiling when chips still have
+		# room. A runaway width still stops at the ceiling so chips stay on screen.
+		if measured + 120.0 <= viewport_w:
+			want = maxf(want, measured)
+		else:
+			want = minf(want, ceiling)
 	return want
 
 

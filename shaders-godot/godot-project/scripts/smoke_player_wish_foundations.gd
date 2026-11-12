@@ -20,6 +20,11 @@ func _initialize() -> void:
 	var joined: String = " ".join(lines)
 	TestSupport.check(failed, joined.contains("Care") or joined.contains("Water change"),
 		"desktop cheat sheet mentions Care")
+	TestSupport.check(failed, joined.contains("J — Mind") and joined.contains("L — Chronicle")
+			and joined.contains("V — Camera"),
+		"desktop cheat sheet lists Mind/Chronicle/Camera shortcuts")
+	TestSupport.check(failed, joined.contains("H — Focus mode") and joined.contains("F12 — Photo"),
+		"desktop cheat sheet documents hide-HUD next to photo")
 	var mlines: PackedStringArray = OnboardingLegibility.cheat_sheet_lines(true)
 	var mjoined: String = " ".join(mlines)
 	TestSupport.check(failed, mjoined.contains("Care") or mjoined.contains("water change"),
@@ -42,6 +47,13 @@ func _initialize() -> void:
 	TestSupport.check(failed, main_src.contains("_show_status_toast(\"Saved\")"), "autosave ceremony")
 	TestSupport.check(failed, main_src.contains("OS.shell_show_in_file_manager"), "photo reveal")
 	TestSupport.check(failed, main_src.contains("Reveal"), "photo toast Reveal button")
+	TestSupport.check(failed, main_src.contains("H hides HUD") or main_src.contains("hides HUD"),
+		"footer hint mentions H hide-HUD")
+	TestSupport.check(failed, main_src.contains("fish_sub = \"none\""),
+		"empty fish chip says none")
+	var render_src: String = FileAccess.get_file_as_string("res://scripts/render_panel.gd")
+	TestSupport.check(failed, render_src.contains("H hides chrome") or render_src.contains("hides chrome"),
+		"photo blurb mentions H hide-HUD")
 
 	if failed.is_empty():
 		print("SMOKE_PLAYER_WISH_FOUNDATIONS_OK")

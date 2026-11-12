@@ -199,7 +199,7 @@ func _build_ui() -> void:
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	outer.add_child(PanelTheme.make_panel_header("Settings", _close_panel))
+	outer.add_child(PanelTheme.make_panel_header("Settings", _close_panel, "O"))
 	outer.add_child(PanelTheme.make_rule())
 
 	var tabs := TabContainer.new()

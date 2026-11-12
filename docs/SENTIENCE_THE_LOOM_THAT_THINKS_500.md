@@ -25,6 +25,21 @@ them (#491). It is mostly about the *edges* of the mind: where the state
 becomes sound, where the world becomes feeling, and where the mind becomes
 something a player can see.
 
+## Where things are (2026-11-10)
+
+A short status so agents do not re-diagnose fixed edges. The diagnosis
+below stays as the original review; this block is the live ledger.
+
+| Lever / phase | Shipped | Still open (next useful) |
+|---|---|---|
+| Phase 0 [V] repairs | #1–#3, #9, #96, #176–#178, #179, #193, #355, #368–#370 | #182 rename, #180 one ammonia, #371 mood clamp |
+| Lever 1 — utterance | #22 Utterance, #76 felt → `voice_params` | #23 adapter, #5/#6 creature bus, #26–#28 repertoire |
+| Lever 2 — tank body | #301 TankVitals + #251 rings, #185 water_sense, #196 gaze | #302 organ groups, #323 SimGate snapshot, remaining health readers |
+| Lever 3 — mind stage | — | #354 mind events, #352 ignition wave, #363 Mind Lens |
+| Shortlist “only ten” | items 1–2, 3 (#22), 6–8 | items 4–5 (bus/repertoire), 9–10 (events/lens) |
+
+Do not rebuild shipped rows. Prefer the open column, Phase 0 leftovers first.
+
 ---
 
 ## The holistic read (read this first)
@@ -130,7 +145,7 @@ at every phase boundary (#499).
 | 176 | `FishHomeostasis.tick` runs only in the eval and the poke harness | `mind_eval.gd:589`, `poke_harness.gd:183` |
 | 177 | Oxygen is dropped from EFE `preferred_error` | `mind_active_inference.gd:86-93` |
 | 178 | Felt gills read only the nitrite penalty, not dissolved O₂ | `fish_protoself.gd:45-47`, `fish.gd:4613` |
-| 179 | `water_feel` bid condition is always true | `tank_mind.gd:194` |
+| 179 | ~~`water_feel` bid condition is always true~~ **fixed** — TankVitals deviation salience | `tank_mind.gd` `_water_feel_salience` |
 | 182 | `gut_fullness` stores hunger (naming trap) | `fish_protoself.gd:48` |
 | 193 | `FishSparkExpression.tick` is never called, so mind-driven shaders never apply | `sim_driver.gd:4329`, `fish_spark_expression.gd:267-272` |
 | 355 | Dawn spark's daylight window is unreachable | `night_watch_extras.gd:221`, `sim_driver.gd:3168-3171` |
@@ -152,16 +167,24 @@ measures).
   - Episodic memory with sleep schemas (`episodic_memory.gd`) and learned beliefs (`fish_learned_mind.gd`).
   - The felt-self layer: protoself, core affect, qualia, felt-now, binding, volition.
   - Signals, contagion, theory of mind, and the eval harness (`mind_eval.gd`, 14/14 plus honesty).
+  - Live homeostasis tick, breath in EFE, and felt gills that feel oxygen (#176–#178).
+- **One utterance + felt prosody (Lever 1 hinge).**
+  - `utterance.gd` (#22) is the shared voice record; felt state already enters `voice_params` (#76).
+  - Do not add a second speech record type; extend Utterance and its adapters (#23, #151).
 - **The voice ladder.**
   - Template → in-process SmolLM2 → embedded → Ollama, with grounding, validators and streaming retraction.
   - The Guardian; the tank's "we" voice; questions; chatter; conversation state; the lexicon.
+- **One tank body (Lever 2 hinge).**
+  - `tank_vitals.gd` (#301) with history rings (#251); `sim_driver` reads `stability_instant` from it.
+  - Per-fish `water_sense` workspace bid (#185); tank night `water_feel` from vitals deviation (#179).
+  - Gaze follows workspace content (#196). Remaining: organ groups (#302), SimGate snapshot (#323), other health readers.
 - **The tank mind.**
   - TankMind's workspace, ignition, mood, self-summary and stream (`tank_mind.gd`), and ColonyMind (`colony_mind.gd`).
   - The night watch, cathedral and vespers; the Chronicle in "we"; the "Us" hymn.
   - The palette mood overlay and the mood-driven pad bed.
 - **The motion toolkit (v0.2.52).**
   - Fully wired: gaze (`motion_gaze.gd`); the pose runtime plus library (13 channels, `data/motion/poses.json`); anticipation (`fish_anticipation.gd`); spring, chain, wave, field and school.
-  - Used only for body events: staging and the event bus.
+  - Used only for body events: staging and the event bus (mind kinds still open — #354).
   - Built but unused: breath, personality, envelope and composer.
 - **`tank_voice_audio.gd`.** FM babble, the tank breath and six bloop kinds, rendered on workers, with an LRU cache of 16.
 
@@ -563,7 +586,7 @@ time, self-knowledge, and finally the tank knowing itself.
   - `_gill_burn`: toxic NH₃ and nitrite irritation.
 
   Both are felt and both have distinct tells (#201, #203).
-- [ ] **179. [V] Fix the always-true `water_feel` bid.** (S·S) `tank_mind.gd:194` reads `if o2 < 0.65 or o2 > 0.0`, which is true for every positive O₂, so the tank "feels its water" every tick at 0.3 salience. Replace it with a deviation measure from TankVitals (#301): salience rises with |vital − normal|.
+- [x] **179. [V] Fix the always-true `water_feel` bid.** (S·S) `tank_mind.gd` night `water_feel` used `if o2 < 0.65 or o2 > 0.0`, which is true for every positive O₂, so the tank "felt its water" every night tick at 0.3 salience. Replaced with `_water_feel_salience` from TankVitals (#301): salience rises with harmful |vital − normal| (+ short-slope trend); healthy / empty snapshots stay silent. Smoke: `smoke_water_feel_bid.gd`.
 - [ ] **180. One ammonia, everywhere.** (S·M) Three systems read three different ammonia measures:
   - The relief pulse uses total NH₃ (`fish.gd:1687-1696`).
   - Stress uses toxic NH₃ (`fish.gd:4599-4633`, pH-dependent via `water_chemistry.gd:215-218`).

@@ -59,7 +59,7 @@ func _build_ui() -> void:
 	# House pattern: header with the × close, scrolling body, no footer
 	# (the panel has no actions). Without a close this panel could be
 	# opened and not dismissed.
-	var shell: Dictionary = PanelTheme.make_panel_shell("Mind", _request_close)
+	var shell: Dictionary = PanelTheme.make_panel_shell("Mind", _request_close, [], "J")
 	add_child(shell.root)
 	_body = shell.body
 

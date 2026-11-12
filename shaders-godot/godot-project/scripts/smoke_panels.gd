@@ -11,6 +11,10 @@ func _initialize() -> void:
 		{"script": "res://scripts/sound_panel.gd", "name": "SoundPanel"},
 		{"script": "res://scripts/camera_views_panel.gd", "name": "CameraViewsPanel"},
 		{"script": "res://scripts/residents_panel.gd", "name": "ResidentsPanel"},
+		{"script": "res://scripts/mind_panel.gd", "name": "MindPanel"},
+		{"script": "res://scripts/chronicle_panel.gd", "name": "ChroniclePanel"},
+		{"script": "res://scripts/library_panel.gd", "name": "LibraryPanel"},
+		{"script": "res://scripts/adopt_panel.gd", "name": "AdoptPanel"},
 	]
 	var failed: Array[String] = []
 	for entry in panels:

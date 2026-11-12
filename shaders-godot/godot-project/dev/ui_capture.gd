@@ -118,7 +118,8 @@ const SEEN_FLAGS: PackedStringArray = ["tutorial_seen", "walkthrough_completed",
 const PASSES: Array[Dictionary] = [
 	{"id": "1152x648", "window": Vector2i(1152, 648), "logical": Vector2i(0, 0)},
 	{"id": "900x600", "window": Vector2i(900, 600), "logical": Vector2i(900, 600)},
-	# HOLISTIC #008 — difficult content / a11y passes (navigable + primary visible).
+	# HOLISTIC #008 — phone portrait + difficult content / a11y passes.
+	{"id": "390x844", "window": Vector2i(390, 844), "logical": Vector2i(390, 844)},
 	{"id": "enlarged_text", "window": Vector2i(1152, 648), "logical": Vector2i(0, 0),
 		"ui_font_scale": 1.5},
 	{"id": "pseudolocale", "window": Vector2i(1152, 648), "logical": Vector2i(0, 0),
@@ -223,7 +224,7 @@ func _ready() -> void:
 	_only_passes = _env("UI_CAPTURE_PASSES", "").split(",", false)
 	if _env("UI_CAPTURE_DIFFICULT", "") == "1":
 		if _only_passes.is_empty():
-			_only_passes = PackedStringArray(["enlarged_text", "pseudolocale", "controller"])
+			_only_passes = PackedStringArray(["390x844", "enlarged_text", "pseudolocale", "controller"])
 		if _only_states.is_empty():
 			_only_states = PackedStringArray([
 				"baseline", "settings", "residents", "long_names", "controller_path", "gamepad_menu"])

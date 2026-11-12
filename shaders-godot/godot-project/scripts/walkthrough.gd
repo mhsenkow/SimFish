@@ -44,48 +44,48 @@ func _build_steps() -> void:
 	_steps = [
 		{
 			"id": "intro", "tool": "",
-			"title": "Build a tank from scratch",
-			"body": "Welcome! Let's set up a living aquarium step by step — hardscape first, then plants, then your animals. The simulation is paused while you build, and starts when you finish.",
+			"title": "Stock this empty tank",
+			"body": "You'll add cover, plants, then animals. The water stays paused so nothing drifts away while you build. Skip leaves the guide and drops you into a living garden that is already running.",
 		},
 		{
 			"id": "hardscape", "tool": "aquascape", "count": "hardscape",
-			"title": "1 · Hardscape",
-			"body": "Rocks and driftwood give fish cover and structure. Open the aquascape tools to place dirt, stone, and wood — drag a piece to reposition it, or use Dig to carve. Come back when you're happy (it's optional).",
+			"title": "1 · Cover (optional)",
+			"body": "Rocks and wood are hiding places. Open Build, place a few pieces, drag to move them. Come back here when you want the next step. Empty glass is fine too.",
 		},
 		{
 			"id": "plant", "tool": "plant", "count": "plant",
 			"title": "2 · Plants",
-			"body": "Live plants oxygenate the water and feed grazers. Design a plant, then press Add 1 / 3 / 5. Try a couple of different forms and colors for variety.",
+			"body": "Plants make oxygen and shade. Open the plant designer, pick a shape, then Add 1. Two or three kinds look more like a garden.",
 		},
 		{
 			"id": "snail", "tool": "snail", "count": "snail",
 			"title": "3 · Snails",
-			"body": "Snails are your cleanup crew — they graze algae and detritus along the glass and substrate. Design one and add a few.",
+			"body": "Snails graze algae and leftover food on the glass and the floor. Design one and add a few. They are the cleanup crew.",
 		},
 		{
 			"id": "shrimp", "tool": "shrimp", "count": "shrimp",
 			"title": "4 · Shrimp",
-			"body": "Shrimp scavenge biofilm and leftover food and add life to the midwater. Add a small colony.",
+			"body": "Shrimp pick through biofilm in the middle of the tank. Add a small group. They are not the same job as snails — they stay up in the plants.",
 		},
 		{
 			"id": "fish", "tool": "fish", "count": "fish",
 			"title": "5 · Fish",
-			"body": "The stars of the tank. Design your fish and stock a school, or a bold centerpiece. Mix species if you like.",
+			"body": "Fish are who you watch. Design one and add a school, or a single showy fish. You can mix species.",
 		},
 		{
 			"id": "watch", "tool": "", "live": true,
-			"title": "6 · Now watch",
-			"body": "Press Next to unpause briefly. See the school tighten? That's shoaling — safety in numbers. Watch how they settle into the structure you built.",
+			"title": "6 · Watch it run",
+			"body": "The tank is running now. Drag to look around. Schools pull together — that huddle is shoaling. Give them a moment to settle into the cover.",
 		},
 		{
 			"id": "feed", "tool": "", "live": true,
-			"title": "7 · First feeding",
-			"body": "Tap the water surface to drop food — watch them converge. That's your first care loop: you feed, they respond.",
+			"title": "7 · Feed them",
+			"body": "Click the water (not this card) to drop food. They should turn toward it. That click is how you feed from now on. Care, in the footer, changes water and rinses the filter.",
 		},
 		{
 			"id": "done", "tool": "",
-			"title": "Your tank is alive!",
-			"body": "Everything's stocked. Press Finish to run the simulation — plants grow, animals breed, and the tank finds its balance.",
+			"title": "You're keeping a tank",
+			"body": "Finish leaves it running. Drag orbits, click feeds, and the footer is Care. You can reopen this tank from the shelf anytime.",
 		},
 	]
 
@@ -99,12 +99,12 @@ func _build_ui() -> void:
 	add_child(_card)
 	_card.anchor_left = 0.5
 	_card.anchor_right = 0.5
-	_card.anchor_top = 0.5
-	_card.anchor_bottom = 0.5
+	_card.anchor_top = 1.0
+	_card.anchor_bottom = 1.0
 	_card.offset_left = -280
 	_card.offset_right = 280
-	_card.offset_top = -150
-	_card.offset_bottom = 150
+	_card.offset_top = -280
+	_card.offset_bottom = -72
 
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 10)
@@ -124,7 +124,7 @@ func _build_ui() -> void:
 	_body_lbl.add_theme_font_size_override("font_size", 14)
 	_body_lbl.add_theme_color_override("font_color", Color8(200, 212, 228))
 	_body_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_body_lbl.custom_minimum_size = Vector2(520, 0)
+	_body_lbl.custom_minimum_size = Vector2(280, 0)
 	v.add_child(_body_lbl)
 
 	_effect_lbl = Label.new()
@@ -206,7 +206,7 @@ func _show_step() -> void:
 	var tool: String = String(s.get("tool", ""))
 	_action_btn.visible = tool != ""
 	match tool:
-		"aquascape": _action_btn.text = tr("Open aquascape tools")
+		"aquascape": _action_btn.text = tr("Open Build")
 		"plant": _action_btn.text = tr("Open plant designer")
 		"snail": _action_btn.text = tr("Open snail designer")
 		"shrimp": _action_btn.text = tr("Open shrimp designer")
@@ -215,7 +215,21 @@ func _show_step() -> void:
 	_update_count()
 	_update_effect_readout()
 	_apply_live_pause(s)
+	_place_card()
 	_notify_step_changed()
+
+
+func _place_card() -> void:
+	if _card == null:
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var w: float = minf(520.0, maxf(280.0, vp.x - 32.0))
+	_card.offset_left = -w * 0.5
+	_card.offset_right = w * 0.5
+	_card.offset_bottom = -76.0
+	_card.offset_top = _card.offset_bottom - 300.0
+	if _body_lbl != null:
+		_body_lbl.custom_minimum_size.x = maxf(240.0, w - 40.0)
 
 
 func _apply_live_pause(s: Dictionary) -> void:

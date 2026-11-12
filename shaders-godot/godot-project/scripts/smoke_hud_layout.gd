@@ -37,6 +37,11 @@ func _init() -> void:
 	var notched: float = H.stats_left_inset(8.0 + 44.0, 100.0, 44.0, vw)
 	t.check(notched > plain, "a notch pushes the stats bar across too")
 
+	# Narrow window: a real menu cluster must still clear the chips.
+	var phone_inset: float = H.stats_left_inset(8.0, 180.0, 0.0, 480.0)
+	t.check(phone_inset >= 8.0 + 180.0,
+		"phone stats bar clears the menu cluster (inset %.1f)" % phone_inset)
+
 	# A pathological measurement must not push the chips off screen.
 	var absurd: float = H.stats_left_inset(8.0, 5000.0, 0.0, vw)
 	t.check(absurd <= vw * H.MAX_INSET_FRAC + 0.01,

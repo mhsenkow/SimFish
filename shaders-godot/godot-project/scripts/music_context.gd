@@ -9,6 +9,7 @@ const _FAUNA_NEUTRAL: Dictionary = {
 	"scale": 1.0, "move": "sweep", "formation": "scatter",
 	"anticipation": 0.0, "drop_tension": 0.0, "dance_blend": 0.0,
 	"dance_bank": 0.0, "soloist": false, "participating": true,
+	"bow": 0.0,
 }
 
 var _ctx: Dictionary = {
@@ -21,6 +22,7 @@ var _ctx: Dictionary = {
 	"swing": 0.0, "humanize": 0.0, "confidence": 0.0, "onsets": [],
 	"move": "sweep", "formation": "scatter", "drop_flash": 0.0,
 	"centroid": 0.5, "brightness": 0.5, "timbre_sharp": 0.5,
+	"swim_busy": 0.0,
 }
 
 func _main_scene() -> Node:
@@ -57,6 +59,8 @@ var _overhead_view: bool = false
 var _life_emphasis: Dictionary = {}
 var _bow_blend: float = 0.0
 var _track_was_active: bool = false
+var _dance_envelopes: Dictionary = {}
+var _env_dt: float = 0.016
 var _spark_calm: float = 0.0
 var _spark_liturgy: String = ""
 
@@ -198,7 +202,9 @@ func life_emphasis(instance_id: int) -> float:
 func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionary:
 	if not _should_dance():
 		return _FAUNA_NEUTRAL.duplicate()
-	if not _fish_participates(instance_id):
+	# CREATURE_MOTION #682 — leftover dancers ease out together; don't drop
+	# them to participation-neutral while the bow / blend is still decaying.
+	if bool(_ctx.active) and not _fish_participates(instance_id):
 		return _participation_neutral(instance_id)
 
 	var swim_pattern: String = String(traits.get("swim_pattern", "school"))
@@ -206,10 +212,19 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 	var boldness: float = float(traits.get("boldness", 0.5))
 	var calm: float = float(traits.get("calm", 0.5))
 	var gluttony: float = float(traits.get("gluttony", 0.5))
+	# Global sleep / stress gate — all genres and sources (not just lofi).
+	var sleep_d: float = clampf(float(traits.get("sleep_depth", 0.0)), 0.0, 1.0)
+	var stress_t: float = clampf(float(traits.get("stress", 0.0)), 0.0, 1.0)
+	if sleep_d >= 0.85 or stress_t >= 0.92:
+		return _participation_neutral(instance_id)
 
 	var i: float = _dance_intensity() * _tank_health_mult()
+	if not bool(_ctx.active):
+		i *= clampf(maxf(_dance_blend, _bow_blend), 0.0, 1.0)
 	if i <= 0.001:
 		return _FAUNA_NEUTRAL.duplicate()
+	var comfort: float = (1.0 - sleep_d) * (1.0 - stress_t * 0.55)
+	i *= lerpf(0.35, 1.0, comfort)
 	var confidence: float = clampf(float(_ctx.confidence), 0.0, 1.0)
 	if confidence < 0.38:
 		i = minf(i, 0.28)
@@ -229,7 +244,8 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 	var tempo_scale: float = float(genre_profile.get("tempo_scale", 1.0))
 	var tempo_factor: float = clampf(float(_ctx.tempo) / 120.0, 0.55, 1.65) * tempo_scale
 
-	var species_mods: Dictionary = MusicChoreography.species_modifiers(swim_pattern)
+	var species_name: String = String(traits.get("species", ""))
+	var species_mods: Dictionary = MusicChoreography.species_modifiers(swim_pattern, species_name)
 	var persona: Dictionary = MusicChoreography.personality_modifiers(boldness, calm, gluttony)
 	lead_score = clampf(lead_score + float(persona.get("solo_bias", 0.0)), 0.0, 1.0)
 
@@ -317,6 +333,12 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 	var loco_ctx: Dictionary = _ctx.duplicate()
 	loco_ctx["instance_id"] = instance_id
 	loco_ctx["move"] = _current_move
+	loco_ctx["swim_busy"] = float(_ctx.get("swim_busy", 0.0))
+	role["vocab"] = String(species_mods.get("vocab", "sweep"))
+	role["kick_bias"] = float(species_mods.get("kick_bias", 1.0))
+	role["glide_bias"] = float(species_mods.get("glide_bias", 1.0))
+	role["fin_flare_bias"] = float(species_mods.get("fin_flare_bias", 1.0))
+	role["hop_bias"] = float(species_mods.get("hop_bias", 0.4))
 	var loco: Dictionary = MusicChoreography.universal_locomotion_mods(loco_ctx, role, i * _dance_blend * show)
 	var loco_scale: float = float(loco.get("scale_pulse", 0.0))
 	var motion_trail: float = clampf(sweep * float(_ctx.energy) * 0.55, 0.0, 0.42) if sweep > 0.62 else 0.0
@@ -333,9 +355,12 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 		"tightness": maxf(0.12, (1.0 - mid * 0.62 * i - tightness_bonus * i) * float(persona.get("tightness", 1.0))),
 		"accel": (1.0 + bass * 1.15 * i + anticipation * 0.62 * i) / sqrt(tempo_factor),
 		"turn": 1.0 + high * 0.85 * i + anticipation * 0.42 * i + dance_bank * 0.35,
-		"dart_chance": (groove * 0.38 * i + anticipation * 0.22 * i) * float(persona.get("dart_chance", 1.0)),
+		"dart_chance": (groove * 0.38 * i + anticipation * 0.22 * i)
+			* float(persona.get("dart_chance", 1.0))
+			* float(species_mods.get("dart_chance_bias", 1.0)),
 		"sweep": sweep,
-		"vertical": vertical,
+		"vertical": clampf(vertical * (float(species_mods.get("hop_bias", 1.0))
+			if String(species_mods.get("vocab", "")) == "hop" else 1.0), 0.0, 1.0),
 		"beat_phase": swung_phase * TAU + float(instance_id % 997) * 0.11,
 		"beat_dart": beat_dart,
 		"wander_refresh": 1.0 + groove * 2.8 * i,
@@ -362,6 +387,8 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 		"fin_flare": float(loco.get("fin_flare", 0.0)),
 		"wave_tail": float(loco.get("wave_tail", 0.0)),
 		"eye_flash": float(loco.get("eye_flash", 0.0)),
+		"vocab": String(loco.get("vocab", species_mods.get("vocab", "sweep"))),
+		"phrase_state": phrase,
 		"leader_lag": leader_lag,
 		"ensemble_dim": ensemble_dim,
 		"dance_freeze": dance_freeze,
@@ -372,9 +399,9 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 		"swing_sway": clampf(float(_ctx.swing) * groove, 0.0, 1.0),
 		"overhead_view": _overhead_view,
 	}
+	_apply_dance_envelope(instance_id, swim_pattern, String(species_mods.get("vocab", "sweep")), result)
 	if String(_ctx.genre) == "lofi" and String(_ctx.source) == "generative":
-		var comfort: float = (1.0 - clampf(float(traits.get("stress", 0.0)), 0.0, 1.0)) \
-			* (1.0 - clampf(float(traits.get("sleep_depth", 0.0)), 0.0, 1.0))
+		# Reuse the sleep/stress comfort already computed above.
 		var response: float = comfort * lerpf(0.12, 0.28, boldness)
 		for key in ["speed", "wander", "home_radius", "home_pull", "tightness", "accel", "turn",
 			"wander_refresh", "home_drift", "wander_amp", "scale", "bass_radius"]:
@@ -559,9 +586,69 @@ func _showiness() -> float:
 	return 0.65
 
 
+func _apply_dance_envelope(instance_id: int, swim_pattern: String, vocab: String, result: Dictionary) -> void:
+	# CREATURE_MOTION #676 — discrete accents go through MotionEnvelope.
+	var rec: Dictionary = _dance_envelopes.get(instance_id, {})
+	var env: MotionEnvelope = rec.get("env") as MotionEnvelope
+	if env == null or String(rec.get("pattern", "")) != swim_pattern \
+			or String(rec.get("vocab", "")) != vocab:
+		var frames: PackedInt32Array = MusicChoreography.dance_envelope_frames(swim_pattern, vocab)
+		var w: int = frames[0] if frames.size() > 0 else 6
+		var a: int = frames[1] if frames.size() > 1 else 4
+		var f: int = frames[2] if frames.size() > 2 else 18
+		var s: int = frames[3] if frames.size() > 3 else 12
+		env = MotionEnvelope.from_frames(w, a, f, s, 60.0)
+		rec = {"env": env, "stamp": -1, "pattern": swim_pattern, "vocab": vocab}
+		_dance_envelopes[instance_id] = rec
+	var frame: int = Engine.get_process_frames()
+	if int(rec.get("stamp", -1)) != frame:
+		var should_trigger: bool = not env.active() and (
+			float(result.get("kick_thump", 0.0)) > 0.35
+			or float(result.get("snare_flick", 0.0)) > 0.4
+			or float(result.get("downbeat_pulse", 0.0)) > 0.5)
+		if should_trigger:
+			env.trigger()
+		env.step(_env_dt)
+		rec["stamp"] = frame
+		_dance_envelopes[instance_id] = rec
+	var gain: float = MusicChoreography.dance_accent_gain(env)
+	result["kick_thump"] = float(result.get("kick_thump", 0.0)) * gain
+	result["snare_flick"] = float(result.get("snare_flick", 0.0)) * gain
+	result["fin_flare"] = float(result.get("fin_flare", 0.0)) * lerpf(0.35, 1.0, gain)
+	result["dance_envelope_stage"] = env.stage
+	if env.stage == MotionEnvelope.Stage.WINDUP:
+		result["anticipation"] = maxf(float(result.get("anticipation", 0.0)),
+			clampf(absf(env.value()) / maxf(env.windup_depth, 0.05), 0.0, 1.0))
+		result["beat_dart"] = false
+	elif env.stage == MotionEnvelope.Stage.ACTION and vocab == "burst" and gain > 0.55:
+		result["beat_dart"] = true
+	elif env.stage == MotionEnvelope.Stage.FOLLOW or env.stage == MotionEnvelope.Stage.SETTLE:
+		if not (vocab == "burst" and gain > 0.7):
+			result["beat_dart"] = false
+
+
+func _prune_dance_envelopes() -> void:
+	if _dance_envelopes.is_empty():
+		return
+	var frame: int = Engine.get_process_frames()
+	var drop: Array = []
+	for id in _dance_envelopes.keys():
+		var rec: Dictionary = _dance_envelopes[id]
+		var env: MotionEnvelope = rec.get("env") as MotionEnvelope
+		if env == null or (not env.active() and frame - int(rec.get("stamp", 0)) > 90):
+			drop.append(id)
+	for id in drop:
+		_dance_envelopes.erase(id)
+
+
+func _exit_linger() -> bool:
+	# CREATURE_MOTION #682 — follow-through after the clock goes silent.
+	return _dance_blend > 0.02 or _bow_blend > 0.02
+
+
 func _should_dance() -> bool:
 	if not bool(_ctx.active):
-		return false
+		return _exit_linger()
 	if String(_ctx.source) == "external":
 		return bool(TankConfig.music_sync_fish)
 	return bool(TankConfig.music_enabled) and bool(TankConfig.music_sync_fish)
@@ -577,11 +664,14 @@ func _scale_pulse(instance_id: int, anticipation: float) -> float:
 	if not _should_dance():
 		return 1.0
 	var i: float = _dance_intensity() * _showiness()
+	if not bool(_ctx.active):
+		i *= clampf(maxf(_dance_blend, _bow_blend), 0.0, 1.0)
 	var wobble: float = sin(float(_ctx.bar_phase) * TAU + float(instance_id % 50) * 0.31) * 0.5 + 0.5
 	return 1.0 + anticipation * 0.18 * i + wobble * float(_ctx.bass) * 0.12 * i + _drop_flash * 0.08
 
 
 func _refresh(dt: float) -> void:
+	_env_dt = clampf(dt, 0.0, 0.05)
 	var was_active: bool = bool(_ctx.active)
 	var ext := _music_reactive()
 	var amb := _ambient_audio()
@@ -589,7 +679,7 @@ func _refresh(dt: float) -> void:
 	var gen_live: bool = amb != null and _generative_live(amb)
 
 	if ext_live:
-		_populate_external(ext, dt)
+		_populate_external(ext, dt, amb)
 	elif gen_live:
 		_populate_generative(amb, dt)
 	else:
@@ -607,6 +697,7 @@ func _refresh(dt: float) -> void:
 	_update_dance_blend(dt)
 	_apply_visual_uniforms(dt)
 	_maybe_drop_bubbles(dt)
+	_prune_dance_envelopes()
 
 
 func _populate_generative(amb: Node, dt: float = 1.0 / 60.0) -> void:
@@ -637,7 +728,8 @@ func _populate_generative(amb: Node, dt: float = 1.0 / 60.0) -> void:
 	_ctx.beat = maxf(0.0, cos(float(_ctx.beat_phase) * TAU) * 0.5 + 0.5) * 0.2
 	_ctx.danceability = clampf(_ctx.energy * 0.75 + 0.2, 0.0, 1.0)
 	_ctx.confidence = 1.0
-	_ctx.onsets = []
+	_ctx.onsets = _synthetic_drum_onsets()
+	_fuse_swim_activity(amb)
 	_ctx.genre = _genre_from_persona(persona_key, persona)
 	_ctx.mood = "bright" if _ctx.mode == "major" else "moody"
 	_ctx.timbre_sharp = lerpf(0.35, 0.55, float(_ctx.energy))
@@ -645,7 +737,7 @@ func _populate_generative(amb: Node, dt: float = 1.0 / 60.0) -> void:
 	_derive_understanding(dt)
 
 
-func _populate_external(mr: Node, dt: float) -> void:
+func _populate_external(mr: Node, dt: float, amb: Node = null) -> void:
 	var drive: Dictionary = mr.get_drive() if mr.has_method("get_drive") else {}
 	var clock: Dictionary = mr.get_music_clock() if mr.has_method("get_music_clock") else {}
 	var analysis: Dictionary = mr.get_analysis() if mr.has_method("get_analysis") else {}
@@ -674,6 +766,8 @@ func _populate_external(mr: Node, dt: float) -> void:
 	_ctx.energy_env = lerpf(float(_ctx.energy_env), _ctx.energy, clampf(dt * 4.0, 0.0, 1.0))
 	_ctx.confidence = float(clock.get("confidence", 0.65))
 	_ctx.onsets = clock.get("onsets", [])
+	_ensure_band_onsets()
+	_fuse_swim_activity(amb if amb != null else _ambient_audio())
 	_ctx.swing = 0.0
 	_ctx.humanize = 0.0
 	_ctx.key = int(clock.get("key", 0))
@@ -704,9 +798,77 @@ func hero_camera_bias() -> Dictionary:
 	return {"yaw": -0.14, "pitch": 0.09, "blend": blend}
 
 
+func _synthetic_drum_onsets() -> Array:
+	var bp: float = float(_ctx.beat_phase)
+	var e: float = float(_ctx.energy)
+	var kick_s: float = 0.0
+	var snare_s: float = 0.0
+	var hat_s: float = 0.0
+	if bp < 0.08 or bool(_ctx.downbeat):
+		kick_s = clampf(0.55 + e * 0.45, 0.35, 1.0)
+	elif bp > 0.48 and bp < 0.58:
+		snare_s = clampf(0.4 + e * 0.4, 0.25, 0.95)
+	if bp < 0.12 or (bp > 0.45 and bp < 0.62) or bp > 0.88:
+		hat_s = clampf(0.25 + e * 0.35, 0.15, 0.75)
+	return [
+		{"band": "bass", "strength": kick_s},
+		{"band": "mid", "strength": snare_s},
+		{"band": "treble", "strength": hat_s},
+	]
+
+
+func _ensure_band_onsets() -> void:
+	var ons: Variant = _ctx.get("onsets", [])
+	if ons is Array and (ons as Array).size() >= 1:
+		return
+	_ctx.onsets = _synthetic_drum_onsets()
+
+
+func _fuse_swim_activity(amb: Node) -> void:
+	var swim_a: float = 0.0
+	if amb != null and amb.get("_swim_activity") != null:
+		swim_a = clampf(float(amb.get("_swim_activity")), 0.0, 1.0)
+	_ctx.swim_busy = swim_a
+	if swim_a <= 0.001:
+		return
+	_ctx.energy = clampf(float(_ctx.energy) + swim_a * 0.08, 0.0, 1.0)
+	_ctx.danceability = clampf(float(_ctx.danceability) + swim_a * 0.06, 0.0, 1.0)
+	var ons: Array = _ctx.get("onsets", [])
+	for o in ons:
+		if not (o is Dictionary):
+			continue
+		match String(o.get("band", "")):
+			"bass", "kick", "low":
+				o["strength"] = clampf(float(o.get("strength", 0.0)) + swim_a * 0.22, 0.0, 1.0)
+			"mid", "snare":
+				o["strength"] = clampf(float(o.get("strength", 0.0)) + swim_a * 0.16, 0.0, 1.0)
+			"treble", "hat", "high":
+				o["strength"] = clampf(float(o.get("strength", 0.0)) + swim_a * 0.08, 0.0, 1.0)
+	_ctx.onsets = ons
+
+
+func tank_ambient_scalar(key: String) -> float:
+	match key:
+		"sweep":
+			return clampf(float(_ctx.get("energy_env", 0.0))
+				* maxf(float(_ctx.get("danceability", 0.0)), 0.2) * _dance_blend, 0.0, 1.0)
+		"beat_phase":
+			return float(_ctx.beat_phase)
+		"downbeat":
+			return 1.0 if bool(_ctx.downbeat) else 0.0
+		"swim_busy":
+			return float(_ctx.get("swim_busy", 0.0))
+	return float(_ctx.get(key, 0.0))
+
+
+func tank_ambient_phrase() -> String:
+	return String(_ctx.phrase_state)
+
+
 func _idle_decay(dt: float) -> void:
 	_ctx.source = "none"
 	_ctx.active = false
+	_ctx.swim_busy = 0.0
 	for key in ["bass", "mid", "high", "energy", "beat", "energy_env"]:
 		_ctx[key] = maxf(0.0, float(_ctx[key]) - dt * 1.6)
 	_drop_tension = lerpf(_drop_tension, 0.0, clampf(dt * 3.0, 0.0, 1.0))

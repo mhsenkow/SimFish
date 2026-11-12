@@ -47,6 +47,8 @@
 #                             as "custom" (target_frac: 0 floor .. 1 surface).
 #                             With VISUAL_CAPTURE_ANGLES=custom it is the only one.
 #   VISUAL_CAPTURE_SEQUENCE_FRAMES / _STRIDE  shoot N frames, one every STRIDE
+#   VISUAL_CAPTURE_ANIMATE_DAY=1  HOLISTIC #060 — sweep day_phase across the
+#     sequence instead of pinning one clock (dawn→night over SEQUENCE_FRAMES)
 #                             frames (stack them for a long exposure)
 #   VISUAL_CAPTURE_CFG        "key=value;key=value" TankConfig overrides applied
 #                             after the scenario (e.g. "tank_glow=0" for the
@@ -124,6 +126,14 @@ func _ready() -> void:
 		push_error("[visual_capture] TankConfig autoload missing")
 		get_tree().quit(1)
 		return
+	if _env("VISUAL_CAPTURE_WINDOWED", "0") == "1":
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+		var win := Vector2i(960, 540)
+		DisplayServer.window_set_size(win)
+		var screen := DisplayServer.screen_get_size()
+		DisplayServer.window_set_position(Vector2i(
+			maxi(40, int((screen.x - win.x) / 2.0)),
+			maxi(40, int((screen.y - win.y) / 2.0))))
 	cfg.set("capture_mode", true)
 	if cfg.has_method("reset_to_defaults"):
 		cfg.reset_to_defaults()
@@ -316,8 +326,19 @@ func _pin_clock() -> void:
 	if _main == null:
 		return
 	var sim: Variant = _main.get("_sim")
-	if sim is Node and (sim as Node).get("day_phase") != null:
-		(sim as Node).set("day_phase", _day_phase)
+	if not (sim is Node) or (sim as Node).get("day_phase") == null:
+		return
+	# HOLISTIC #060 — animate day_phase across a sequence for lighting-in-motion.
+	if _env("VISUAL_CAPTURE_ANIMATE_DAY", "0") == "1" and _armed:
+		var seq_n: int = maxi(1, _env("VISUAL_CAPTURE_SEQUENCE_FRAMES", "1").to_int())
+		var start_p: float = clampf(_env("VISUAL_CAPTURE_DAY_START", "0").to_float(), 0.0, 1.0)
+		var end_p: float = clampf(_env("VISUAL_CAPTURE_DAY_END", "0.75").to_float(), 0.0, 1.0)
+		var t: float = 0.0
+		if seq_n > 1 and _angle_frame >= ANGLE_SETTLE:
+			t = clampf(float(_angle_frame - ANGLE_SETTLE) / float(seq_n - 1), 0.0, 1.0)
+		(sim as Node).set("day_phase", lerpf(start_p, end_p, t))
+		return
+	(sim as Node).set("day_phase", _day_phase)
 
 
 # Hand the camera back from whatever the game was doing with it. The idle

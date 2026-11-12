@@ -315,26 +315,26 @@ watching → trust → long-run). One idea at a time.
 - [ ] **241. Chip plain English.** Every chip expands to one sentence a non-aquarist gets.
 - [ ] **242. Numbers optional.** Mode: icons only / icons+words / icons+numbers.
 - [ ] **243. Alert priority.** One alert at a time; queue the rest.
-- [ ] **244. Alert without panic red.** Urgent uses amber + icon; reserve red for dying.
+- [x] **244. Alert without panic red.** Urgent uses amber + icon; reserve red for dying.
 - [ ] **245. Mood chip teaches fish.** "Skittish — something startled them."
 - [ ] **246. Water chip teaches chemistry.** "Heavy — consider a small water change."
 - [ ] **247. Dismissible captions.** Captions never stack into a wall.
 - [ ] **248. Caption rate limit.** Max one ambient caption / 20 s unless critical.
 - [ ] **249. HUD dim curve.** Idle dim slower; mouse-near restores instantly.
 - [ ] **250. Hide HUD hotkey.** Clean watch mode; legend still available on hold-?.
-- [ ] **251. PiP clarity.** Follow PiP labeled with name + species.
-- [ ] **252. PiP click-through.** Clicking PiP focuses creature, doesn't feed.
-- [ ] **253. Stat flicker die.** Values don't jitter every frame; show smoothed.
-- [ ] **254. Units on chips.** ppm / °C visible or explained once.
-- [ ] **255. Empty chip states.** "—" means unknown, not zero — say so.
+- [x] **251. PiP clarity.** Follow PiP labeled with name + species.
+- [x] **252. PiP click-through.** Clicking PiP focuses creature, doesn't feed.
+- [x] **253. Stat flicker die.** Values don't jitter every frame; show smoothed.
+- [x] **254. Units on chips.** ppm / °C visible or explained once.
+- [x] **255. Empty chip states.** "—" means unknown, not zero — say so.
 - [ ] **256. First chip tap tutorial.** Once: "chips explain the tank."
 - [ ] **257. Mobile chip parity.** Same meanings, larger tap areas.
-- [ ] **258. Alert deep link.** Alert tap opens the relevant Care/Settings control.
+- [x] **258. Alert deep link.** Alert tap opens the relevant Care/Settings control.
 - [ ] **259. No overlapping toasts.** Photo / save / alert share one toast lane.
 - [ ] **260. Chronicle toggle.** Optional scrollback of recent captions.
-- [ ] **261. Color-blind chip patterns.** Shape + hatch, not hue alone.
-- [ ] **262. Night HUD.** Night mode softens HUD emissives.
-- [ ] **263. Pause HUD.** Paused state unmistakable.
+- [x] **261. Color-blind chip patterns.** Shape + hatch, not hue alone.
+- [x] **262. Night HUD.** Night mode softens HUD emissives.
+- [x] **263. Pause HUD.** Paused state unmistakable.
 - [ ] **264. Performance chip optional.** FPS only if enabled — hide from zen default.
 - [ ] **265. Biomass vanity.** Optional "life in the tank" soft count for curious keepers.
 - [ ] **266. Time-of-day chip.** Dawn/day/dusk/night word for atmosphere learners.
@@ -349,9 +349,9 @@ watching → trust → long-run). One idea at a time.
 - [ ] **275. Critical alert sticky.** Dying O₂ stays until acknowledged.
 - [ ] **276. Chip history sparkline.** Tiny 5-min trend on expand — teaches drift.
 - [ ] **277. Localization length.** Chips tolerate German-length strings without clip.
-- [ ] **278. HUD screenshot clean.** Hide HUD binding documented next to photo.
-- [ ] **279. Coachmark vs HUD z-order.** Coachmarks never trap under chips.
-- [ ] **280. HUD smoke.** Assert chip expand strings exist for mood/water/alert.
+- [x] **278. HUD screenshot clean.** Hide HUD binding documented next to photo.
+- [x] **279. Coachmark vs HUD z-order.** Coachmarks never trap under chips.
+- [x] **280. HUD smoke.** Assert chip expand strings exist for mood/water/alert.
 
 ## Section 8 — Sound, calm & desk zen (281–320)
 

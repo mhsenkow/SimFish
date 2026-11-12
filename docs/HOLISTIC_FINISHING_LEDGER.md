@@ -15,6 +15,50 @@ Newest batch first.
 
 ---
 
+## Batch 2026-11-12 — Wave B authored exit gate
+
+Authored P1s in **021–100** closed (15 open → 0). `validate_holistic_plan` OK (160 tasks, 60 checked). `check_warnings` 0. Targeted Wave B smokes green (motion_*, subject_framing, holistic_wave_b_contracts, camera_controller, ambient_audio, fish_life_bouts, tank_fidelity, tank_shapes, room_value_ladder, care_feedback). `smoke_baseline.txt` remains empty of known failures. Full `run_smokes.sh` exercised at exit; human visual/audio matrix captures remain optional follow-up via `visual_baseline_matrix.sh`, `audio_baseline.sh`, `habitat_mature_series.sh`, `fish_probe_fps_matrix.sh`.
+
+## Batch 2026-11-12 — Wave B Pass 3–6 glass/habitat/depth (055–080 / 096)
+
+| ID | Status | Change | Files | Checks | Artifacts / limits |
+|---|---|---|---|---|---|
+| 055 | implemented | Shape-aware face_veil/corner_ghost/band weights; prism alpha cap; world pushes veil | `glass.gdshader`, `world.gd` | `smoke_tank_shapes`; `smoke_holistic_wave_b_contracts` | Front/grazing visual PNGs not re-shot |
+| 060 | implemented | `VISUAL_CAPTURE_ANIMATE_DAY` sweep; matrix defaults dawn/noon/dusk/night | `dev/visual_capture.gd`, `scripts/visual_baseline_matrix.sh` | contracts smoke | Full matrix + GIF compose at exit / review |
+| 061 | implemented | Terrain-sampled slope_hint / bed_top for strata | `world.gd` `_apply_substrate_fidelity_strata` | `smoke_tank_fidelity` | Height-map sampler deferred |
+| 062 | implemented | Stable gravel phase jitter + fine third pass; grain_population cap 0.92 | `substrate_grain.gdshaderinc`, `substrate_opaque.gdshader` | fidelity smoke | — |
+| 065 | implemented | `dust_panel_bias` tracks light; remove bio-seed dust | `tank_fidelity_runtime.gd`, `aquarium_visuals.gd` | contracts + fidelity | Shader light-dir uniform deferred |
+| 067 | implemented | Cosmetics no longer floors `screen_reflection` / overrides corner_ghost | `aquarium_visuals.gd` | contracts | Rename `green_dust`→`inside_film` deferred |
+| 072 | implemented | Room `grain_variation` 0.11; wall haze 0.52 | `voxel_mat.gd`, `world.gd` | contracts | `smoke_room_value_ladder` at exit |
+| 080 | implemented | `scripts/habitat_mature_series.sh` five-state capture recipe | shell runner | contracts | Run series for human review under `output/visual_baselines/` |
+| 096 | implemented | `_depth_excursion` softens vertical home pull on FORAGE/FLEE/burst; restores preferred_y | `fish.gd` | `smoke_fish_life_bouts` 49 | Probe re-measure at exit |
+
+## Batch 2026-11-12 — Wave B Pass 2 motion P1 (093 / 099 / 100)
+
+| ID | Status | Change | Files | Checks | Artifacts / limits |
+|---|---|---|---|---|---|
+| 093 | implemented | Rest vs hypoxia opercula contrast; close LOD hypoxia gain; quieter hero bob/swim floor | `fish.gd` | `smoke_motion_face` 23 | Macro inspect clips not re-shot this batch |
+| 099 | implemented | Probe env `MAX_FPS` / `TIME_SCALE` / `FIXED_SEED`; path_len + tank_age footer; matrix shell | `dev/fish_behaviour_probe.gd`, `scripts/fish_probe_fps_matrix.sh` | compile_check; matrix run at exit gate | Full matrix deferred to Wave B exit |
+| 100 | implemented | Archetype separability smoke (school/hover/surface/bottom) + capture path asserts | `smoke_motion_recognition_stats.gd` | 12 checks | Human unlabeled clip review still recommended via `visual_capture` fit + MOTION_REVIEW_PROTOCOL |
+| 086 refresh | noted | Lockstep column still measured by probe; re-baseline with #099 matrix | — | — | — |
+
+## Batch 2026-11-12 — Wave B Pass 1 camera follow (024 / 025)
+
+| ID | Status | Change | Files | Checks | Artifacts / limits |
+|---|---|---|---|---|---|
+| 024 | implemented | Size-aware `follow_subject_frac` / pullback / soft follow floor; live `effective_size` height; reduced stacked lead + Y bias | `camera_controller.gd`, `main.gd` | `smoke_subject_framing` 43; `smoke_camera_controller` 0 fail | Live follow clips not re-captured this batch |
+| 025 | implemented | Sustained plant LOS timer + bounded orbit nudge via `prefer_visible_site`; sleep/REST/FLEE skip dodge | `main.gd` (`_tick_follow_occlusion`) | framing smoke asserts wiring; staging #177 helpers reused | Hardscape occupancy not probed yet — plant LOS only |
+
+## Batch 2026-11-12 — Wave B Pass 0 motion↔audio seam
+
+Post–v0.2.52 living-motion refresh of CREATURE_MOTION #189 audio bridge + trust evidence for Holistic **005** / **009**.
+
+| ID | Status | Change | Files | Checks | Artifacts / limits |
+|---|---|---|---|---|---|
+| 005/009 refresh | implemented | Motion SFX pan via `set_event_world_pos`; dart/startle always emit for audio while staging remains a visual budget; swim bed biased by burst/hover bout share; glass tap plays habituated panned startle | `motion_staging.gd`, `fish_anticipation.gd`, `sim_driver.gd` | `smoke_motion_audio_bridge` 10; `smoke_motion_anticipation` 23; `smoke_motion_staging` 24 | Peak/RMS still levels not quality; full `audio_baseline.sh` / behaviour probe re-run deferred to Wave B exit gate |
+
+---
+
 ## Batch 2026-10-02 — scene callback teardown fix
 
 - Player log traced the invalid lambda to `main.gd`'s delayed voice presentation during a settings-triggered scene reload. Replaced the SceneTree timer lambda with a bound controller method, which disconnects when the controller is freed and skips delivery when detached or queued for deletion.

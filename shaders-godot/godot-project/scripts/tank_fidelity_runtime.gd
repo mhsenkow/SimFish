@@ -123,9 +123,10 @@ func tick_glass_dust(dt: float, light: float, nutrients: float, snail_graze: flo
 	# Accumulate with light × nutrients; graze clears locally via tracks.
 	wipe_cooldown = maxf(0.0, wipe_cooldown - dt)
 	var grow: float = (0.0008 + light * 0.0014 + nutrients * 0.0006) * dt
-	# Uneven: light-facing / back panels heavier (item 24).
+	# HOLISTIC #065 — bias updates with light so film concentrates where caused.
+	dust_panel_bias = clampf(lerpf(dust_panel_bias, 0.35 + light * 0.55, 0.08), 0.2, 0.95)
 	grow *= lerpf(0.55, 1.25, dust_panel_bias)
-	# Daytime grows faster.
+	# Daytime grows faster; upper-pane bias via daylight alone (shader height).
 	grow *= lerpf(0.45, 1.0, daylight)
 	glass_dust = clampf(glass_dust + grow - snail_graze * dt * 0.002, 0.0, 1.0)
 	# Fade tracks over hours (item 23) — ~sim hours compressed.

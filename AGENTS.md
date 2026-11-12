@@ -17,7 +17,7 @@ All the same project.
 | Path | What it is |
 |---|---|
 | `shaders-godot/godot-project/` | **The actual game.** Open this in Godot 4.6+. Main scene: `tank_menu.tscn`. |
-| `shaders-godot/godot-project/scripts/` | ~642 GDScript files, ~295 of them `smoke_*` tests (counts in [docs/INDEX.md](docs/INDEX.md); subsystem breakdown in README). |
+| `shaders-godot/godot-project/scripts/` | ~647 GDScript files, ~299 of them `smoke_*` tests (counts in [docs/INDEX.md](docs/INDEX.md); subsystem breakdown in README). |
 | `shaders-godot/godot-project/shaders/` | Render pipeline (palette quantize + voxel/water/glass/etc). |
 | `shaders-godot/godot-project/dev/` | Headless capture scenes (`capture.tscn`, `capture_pass.*`) — dev-only, not part of the game. |
 | `shaders-godot/make_palette.py` | Palette PNG generator. |
@@ -181,5 +181,5 @@ cd shaders-godot/godot-project && ../../scripts/godot.sh --path . tank_menu.tscn
 python3 tools/render_preview.py
 
 # Tag a release (CI builds mac/win/linux/android)
-git tag v0.2.53 && git push origin v0.2.53
+git tag v0.2.54 && git push origin v0.2.54
 ```

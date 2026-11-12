@@ -80,6 +80,27 @@ func _initialize() -> void:
 	f.current_mode = Fish.Mode.CRUISE
 	FishPoseRuntime.note_action_end(f, "glide", 0.4)
 	t.equals(FishPoseRuntime.select_pose(f), "glide", "#216 dart end holds glide")
+	f.set_meta("_pose_end", "")
+	f.set_meta("_pose_end_t", 0.0)
+	f._music_mods_cache = {
+		"dance_blend": 0.85, "phrase_state": "drop", "downbeat_pulse": 1.0,
+		"glide_hold": 0.0,
+	}
+	f._music_mods_render_stamp = Engine.get_process_frames()
+	f._music_mods_physics_stamp = Engine.get_physics_frames()
+	t.equals(FishPoseRuntime.select_pose(f), "display", "drop downbeat keys a display pose")
+	f._music_mods_cache = {
+		"dance_blend": 0.85, "phrase_state": "verse", "downbeat_pulse": 0.0,
+		"glide_hold": 0.7,
+	}
+	t.equals(FishPoseRuntime.select_pose(f), "glide", "glide hold keys a glide pose")
+	f._asleep = true
+	t.equals(FishPoseRuntime.select_pose(f), "sleep", "sleep still wins over music poses")
+	f._asleep = false
+	f._music_mods_cache = {}
+	f._music_mods_render_stamp = -1
+	f._music_mods_physics_stamp = -1
+	f.set_meta("_music_pose_name", "")
 
 	# #214 / #215: tick leaves breath/flicker alive and channels finite.
 	f.speed = 0.3

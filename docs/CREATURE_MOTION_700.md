@@ -2965,25 +2965,25 @@ the things they touch still needs work.
 The tank is meant to dance. Dance motion should be the animal's own repertoire
 set to the beat, not a different animal.
 
-- [ ] **676. Dance moves are actions.** Every dance move runs through
+- [x] **676. Dance moves are actions.** Every dance move runs through
   `ActionEnvelope`: anticipation on the pre-beat, the hit on the beat,
   follow-through after (#169). *AN FT · M/L*
-- [ ] **677. Freeze is a moving hold.** As in #263: during `dance_freeze`, breath,
+- [x] **677. Freeze is a moving hold.** As in #263: during `dance_freeze`, breath,
   fins and eyes keep going. *PP SA · S/M*
-- [ ] **678. Dance vocabulary by species.** Danios dance in bursts, angelfish in
+- [x] **678. Dance vocabulary by species.** Danios dance in bursts, angelfish in
   glides, corydoras in hops, bettas in flares. Assemble each species' dance
   from its own moves. *AP · M/L*
-- [ ] **679. Poses on the downbeats.** Key a display pose on the drop and
+- [x] **679. Poses on the downbeats.** Key a display pose on the drop and
   holds on bar lines, with procedural in-betweens: pose to pose, on the music. *PP TI · M/M*
-- [ ] **680. Bank caps by body.** `dance_bank` allows ±0.95 rad
+- [x] **680. Bank caps by body.** `dance_bank` allows ±0.95 rad
   ([fish.gd:7661](../shaders-godot/godot-project/scripts/fish.gd:7661)). A
   tall angelfish rolling that far reads as capsizing. Cap the bank per body
   plan. *SD · S/M*
-- [ ] **681. Waves on phrases.** Music-driven school turns
+- [x] **681. Waves on phrases.** Music-driven school turns
   (`tick_music_sweep`) land on phrase boundaries, with a visible leader (#164). *TI ST · S/M*
-- [ ] **682. A clean exit.** When the music ends, dancers return to their own
+- [x] **682. A clean exit.** When the music ends, dancers return to their own
   motion with follow-through, not a snap. *SI FT · S/S*
-- [ ] **683. Trail through fins, not geometry.** The music trail stretches the
+- [x] **683. Trail through fins, not geometry.** The music trail stretches the
   tail to 1.06 ([fish.gd:7881](../shaders-godot/godot-project/scripts/fish.gd:7881)).
   Show it as fin spread and chain follow-through instead. *FT SD · S/S*
 

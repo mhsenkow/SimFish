@@ -50,10 +50,10 @@ https://mhsenkow.github.io/SimFish/docs/privacy.html
 2. Wait for the aquascape to build; pinch/drag camera; open Care / Feed.  
 3. Optional: Settings → confirm touch controls.  
 
-No login. Next store build **0.2.53 (66)**. ASC marketing version stays **1.0**.
+No login. Next store build **0.2.54 (67)**. ASC marketing version stays **1.0**.
 
 ## Build / encryption
-- Marketing version **0.2.53**, build **66** (ASC version string **1.0**)  
+- Marketing version **0.2.54**, build **67** (ASC version string **1.0**)  
 - `ITSAppUsesNonExemptEncryption` = false (HTTPS only; no custom crypto)
 
 ## API upload
@@ -74,7 +74,7 @@ cd build/ios
 xcodebuild -project WalstadLoom.xcodeproj -scheme WalstadLoom \
   -destination 'generic/platform=iOS' -archivePath Archive.xcarchive \
   DEVELOPMENT_TEAM=WC44W2QVE4 CODE_SIGN_STYLE=Automatic \
-  CURRENT_PROJECT_VERSION=66 -allowProvisioningUpdates archive
+  CURRENT_PROJECT_VERSION=67 -allowProvisioningUpdates archive
 xcodebuild -exportArchive -archivePath Archive.xcarchive \
   -exportPath export -exportOptionsPlist ExportOptions.plist \
   -allowProvisioningUpdates
@@ -90,7 +90,7 @@ xcodebuild -exportArchive -archivePath Archive.xcarchive \
 7. App Privacy → Data Not Collected  
 
 ## Status (2026-11-07)
-- Desktop and the site ship **v0.2.53**. App Store Connect marketing version remains **1.0**; binary **0.2.53 / 66**.
+- Desktop and the site ship **v0.2.54**. App Store Connect marketing version remains **1.0**; binary **0.2.54 / 67**.
 - ASC app `6823230910` — iOS + macOS are **Ready for Sale** on 1.0; upload build **66** into a new version (or update) and submit.
 - Price **$2.99** USA base; categories Games → Simulation + Casual; secondary Entertainment  
 - Screenshots: iPhone 6.7" ×3, iPad 13" ×3, Mac 2560×1600 ×3 (App Preview video **not** required)  

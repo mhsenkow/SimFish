@@ -169,4 +169,8 @@ func _init() -> void:
 	TopdownMotion.pond_active = false
 
 	cfg_probe.free()
+	for sc in Picker.SCENARIOS:
+		var sid: String = String(sc.get("id", ""))
+		var shot := "res://assets/template_previews/%s.png" % sid
+		t.check(FileAccess.file_exists(shot), "%s has a captured template shot" % sid)
 	quit(t.finish())

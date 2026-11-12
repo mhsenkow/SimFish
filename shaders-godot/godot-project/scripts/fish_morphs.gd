@@ -60,12 +60,34 @@ const ENDLER: Array = [
 ]
 
 
+const MOLLY: Array = [
+	[Color8(18, 16, 20), Color8(36, 34, 40)],
+	[Color8(232, 176, 48), Color8(160, 90, 30)],
+	[Color8(230, 230, 226), Color8(28, 26, 30)],
+	[Color8(186, 196, 204), Color8(70, 78, 88)],
+	[Color8(40, 70, 150), Color8(20, 24, 40)],
+]
+
+
+const PLATY: Array = [
+	[Color8(214, 96, 48), Color8(255, 180, 60)],
+	[Color8(240, 200, 40), Color8(200, 60, 40)],
+	[Color8(30, 30, 34), Color8(220, 60, 50)],
+	[Color8(210, 80, 120), Color8(255, 210, 180)],
+	[Color8(60, 120, 180), Color8(230, 230, 220)],
+]
+
+
 static func palette(name: String) -> Array:
 	match name:
 		"guppy":
 			return GUPPY
 		"endler":
 			return ENDLER
+		"molly":
+			return MOLLY
+		"platy":
+			return PLATY
 		_:
 			return REEF
 
@@ -99,4 +121,4 @@ static func pick(name: String, roll: float) -> Array:
 # morph is the same fish in a different colour: rerolling its skeleton
 # would turn half a guppy colony into disc-shaped tangs.
 static func restyles_body(name: String) -> bool:
-	return name != "guppy" and name != "endler"
+	return name != "guppy" and name != "endler" and name != "molly" and name != "platy"

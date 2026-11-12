@@ -785,6 +785,8 @@ var _acclimation_remaining: float = ACCLIMATION_DURATION
 # over generations.
 var home_x: float = INF                  # INF = set lazily from spawn pos
 var home_y: float = INF                  # vertical territory anchor; INF = use preferred_y
+# HOLISTIC #096 — temporary leave-band for feed/flee; decays back to preferred.
+var _depth_excursion: float = 0.0
 var home_z: float = INF
 var home_radius: float = 2.5             # how far the fish wanders from home (XZ)
 var home_y_radius: float = 0.8           # how far the fish strays vertically from home_y
@@ -6382,6 +6384,23 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if _spawn_settle_remaining > 0.0:
 		vertical_home_pull *= FishSpawnSettle.factor(
 			_spawn_settle_remaining, _spawn_settle_duration)
+	# HOLISTIC #096 — foraging / flee may leave the preferred band; ease pull
+	# while the excursion is live, then gradually restore home_y.
+	var competing: bool = current_mode == Mode.FORAGE or current_mode == Mode.FLEE \
+			or burst_remaining > 0.08
+	if competing:
+		_depth_excursion = minf(1.0, _depth_excursion + dt * 0.85)
+	else:
+		_depth_excursion = maxf(0.0, _depth_excursion - dt * 0.12)
+		var pref_frac_v: Variant = _saved_genome.get("preferred_y_frac", null) \
+			if not _saved_genome.is_empty() else null
+		if _depth_excursion < 0.35 and pref_frac_v != null and sim != null:
+			var world_n: Node = sim.get_parent() if sim.get_parent() != null else null
+			if world_n != null and world_n.has_method("preferred_y_at"):
+				var pref_y: float = float(world_n.call(
+					"preferred_y_at", home_x, home_z, float(pref_frac_v)))
+				home_y = lerpf(home_y, pref_y, dt * 0.08)
+	vertical_home_pull *= lerpf(1.0, 0.18, _depth_excursion)
 	desired.y += vertical_home_pull
 	# Don't keep tugging toward the meniscus once the fish is already there —
 	# that pins mid-water species sideways under the ceiling.
@@ -7476,7 +7495,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if not scale.is_finite():
 		scale = Vector3.ONE * _maturity_scale() * growth_factor
 	var scale_target: float = _maturity_scale() * growth_factor
-	scale_target *= SaveHelpers._num(_music_mods().get("scale", 1.0), 1.0)
+	var tc_music: Node = tank_cfg()
+	if tc_music != null and (bool(tc_music.music_enabled) or bool(tc_music.music_sync_fish)):
+		scale_target *= SaveHelpers._num(_music_mods().get("scale", 1.0), 1.0)
 	if not is_finite(scale_target) or scale_target <= 0.0:
 		scale_target = _maturity_scale()
 	scale = scale.lerp(Vector3.ONE * scale_target, dt * 0.5)
@@ -7503,6 +7524,10 @@ func _process(dt: float) -> void:
 	# #352: under slow-mo, pose interpolation keeps wall-clock fidelity.
 	set_meta("_pose_wall_dt", wall_dt)
 	set_meta("_sim_time_scale", time_scale)
+	# Off-camera fish still swim. They do not need glows, trails, or extra
+	# integration steps the player cannot see.
+	var on_cam: bool = sim == null or not sim.has_method("is_creature_visible_to_camera") \
+		or sim.is_creature_visible_to_camera(self)
 	if is_finite(_spawn_depth_target_y) and not is_inf(_spawn_depth_target_y):
 		# Fry begin in the mother's layer, then migrate gently toward their
 		# inherited species niche instead of snapping there at birth.
@@ -7515,7 +7540,7 @@ func _process(dt: float) -> void:
 			_spawn_depth_target_y = INF
 
 	# Fry dart trail (#190): only escapes and play chases, not every wander burst.
-	if maturity == MATURITY_FRY and burst_remaining > 0.0 and speed > max_speed * 0.45 \
+	if on_cam and maturity == MATURITY_FRY and burst_remaining > 0.0 and speed > max_speed * 0.45 \
 			and MotionStaging.fry_trail_allowed(self):
 		_fry_trail_timer -= dt
 		if _fry_trail_timer <= 0.0:
@@ -7526,7 +7551,7 @@ func _process(dt: float) -> void:
 	# uniform, and we update once a second to keep the cost trivial.
 	# The pulse animation runs in-shader (TIME based), so we just set
 	# the strength scalar; no per-frame work needed beyond the gate.
-	if is_bioluminescent:
+	if on_cam and is_bioluminescent:
 		_biolum_t += dt
 		if _biolum_t > 1.0:
 			_biolum_t = 0.0
@@ -7549,18 +7574,19 @@ func _process(dt: float) -> void:
 				strength *= clampf(float(tc.biolum_multiplier), 0.0, 3.0)
 			_apply_bioluminescence_uniform(strength)
 	# Witnessable dream wisp (#22) — faint night glow over sleeping dreamers.
-	if _asleep and _dreaming and _dream_wisp != "" and sim != null and sim.has_method("daylight"):
+	if on_cam and _asleep and _dreaming and _dream_wisp != "" and sim != null and sim.has_method("daylight"):
 		var dl_w: float = float(sim.daylight())
 		if dl_w < 0.38:
 			var wisp: float = 0.14 + 0.11 * absf(sin(_motor_phase * 1.85 + float(get_instance_id() % 23) * 0.07))
 			if stress > 0.5:
 				wisp *= 1.35
 			_apply_bioluminescence_uniform(wisp)
-	if float(_replay_glow) > 0.01:
+	if on_cam and float(_replay_glow) > 0.01:
 		_replay_glow = maxf(0.0, _replay_glow - dt * 0.25)
 		_apply_bioluminescence_uniform(_replay_glow * 0.55)
 
-	_update_pheromone_trail()
+	if on_cam:
+		_update_pheromone_trail()
 	# Belly/silver flash: courtship + spawn only — music sync used to drive this
 	# every frame via instance custom data and read as the whole fish strobing.
 	_belly_flash_cd = maxf(0.0, _belly_flash_cd - dt)
@@ -7576,13 +7602,13 @@ func _process(dt: float) -> void:
 	if _silver_flash > 0.0:
 		_silver_flash = maxf(0.0, _silver_flash - dt * 3.5)
 	var belly_push: float = clampf(_belly_flash + _silver_flash * 0.45, 0.0, 0.55)
-	if belly_push > 0.01 and absf(belly_push - _last_belly_flash_push) > 0.03:
+	if on_cam and belly_push > 0.01 and absf(belly_push - _last_belly_flash_push) > 0.03:
 		_apply_belly_flash_uniform(belly_push)
 		_last_belly_flash_push = belly_push
-	elif belly_push <= 0.01 and _last_belly_flash_push > 0.01:
+	elif on_cam and belly_push <= 0.01 and _last_belly_flash_push > 0.01:
 		_apply_belly_flash_uniform(0.0)
 		_last_belly_flash_push = 0.0
-	if TopdownMotion.pond_active and sim != null:
+	if on_cam and TopdownMotion.pond_active and sim != null:
 		var y_min: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.5
 		var y_max: float = _water_surface_y() - 0.4
 		var band: float = TopdownMotion.species_depth_band_tint(home_y, y_min, y_max) - 1.0
@@ -7594,17 +7620,18 @@ func _process(dt: float) -> void:
 		var calm: float = sim.spark_calm()
 		if calm > 0.2 and _startle_remaining <= 0.0 and burst_remaining <= 0.0:
 			velocity *= lerpf(1.0, 0.72, calm)
-	MakeItThere.tick_fish_body(self, sim, dt)
+	if on_cam:
+		MakeItThere.tick_fish_body(self, sim, dt)
 
 	# Satiety (#125) fills the belly a little when the fish has just eaten.
 	# Gestation bulge lives on its own child node (#141) so fins stay unscaled.
 	var full: float = clampf(1.0 - hunger, 0.0, 1.0)
 	var satiety_y: float = 1.0 + full * 0.06
 	_body_mid_rest_scale = Vector3(1.0 + full * 0.02, satiety_y, 1.0)
-	_update_gravid_belly()
-	# Mouthbrooding throat bulge — lazy-created when the female starts
-	# incubating; scaled by progress so it visibly fills + recedes.
-	_update_mouthbrood_bulge()
+	if on_cam and is_livebearer and sex == 1:
+		_update_gravid_belly()
+	if on_cam and _mouthbrood_progress > 0.0:
+		_update_mouthbrood_bulge()
 
 	# Death sequence — drifts sideways, sinks, fades over DEATH_DURATION
 	# before the sim_driver actually frees us. Skips the normal motion
@@ -7623,7 +7650,10 @@ func _process(dt: float) -> void:
 	# no cost when it doesn't matter.
 	if not is_finite(speed):
 		speed = 0.0
-	var n_steps: int = clampi(int(ceil(dt / maxf(0.05 / clampf(speed / maxf(max_speed, 0.15), 0.55, 1.6), 0.028))), 1, 20)
+	# 5× and 10× used to buy stability with more substeps (up to 20). Cap at
+	# the 5× count so faster playback does not multiply the motion cost.
+	var step_cap: int = 3 if on_cam else 1
+	var n_steps: int = clampi(int(ceil(dt / maxf(0.05 / clampf(speed / maxf(max_speed, 0.15), 0.55, 1.6), 0.028))), 1, step_cap)
 	var sub_dt: float = dt / float(n_steps)
 	var pose_frame: float = FishTiming.pose_dt_for_time_scale(
 		dt, float(get_meta("_pose_wall_dt", dt)), float(get_meta("_sim_time_scale", 1.0)))
@@ -7923,13 +7953,17 @@ func _face_direction(d: Vector3) -> void:
 
 func _breath_amplitude() -> float:
 	var breath_load: float = maxf(_breath_load, 0.55)
-	var amplitude: float = 0.028 + clampf(breath_load - 1.0, 0.0, 1.0) * 0.04
+	var amplitude: float = 0.022 + clampf(breath_load - 1.0, 0.0, 1.0) * 0.045
 	# #357: sleep breathing ~60% rate/amp.
 	amplitude *= FishTiming.sleep_breath_mult(_asleep)
 	if _asleep:
 		amplitude *= 0.75  # remaining depth cut after the 0.6 rate factor
 	elif speed > max_speed * 0.55:
-		amplitude *= 0.35
+		amplitude *= 0.28
+	# HOLISTIC #093 — suppress whole-body bob at hero distance; opercula carry it.
+	var ppu: float = _pose_lod_ppu()
+	if ppu < 18.0:
+		amplitude *= lerpf(0.35, 1.0, clampf(ppu / 18.0, 0.0, 1.0))
 	return amplitude
 
 
@@ -8562,12 +8596,12 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		if _MotionWaveScript.uses_wave(self):
 			bank_target = lerpf(bank_target, _MotionSchoolScript.bank_correlation(self), 0.38)
 		var dance_bank: float = float(mm.get("dance_bank", 0.0))
+		var bank_lim: float = 0.65
 		if dance_bank > 0.02:
+			bank_lim = MusicChoreography.dance_bank_cap(swim_pattern)
 			var accent: float = maxf(float(mm.get("kick_thump", 0.0)), float(mm.get("snare_flick", 0.0)))
-			bank_target = clampf(
-				bank_target + dance_bank * signf(yaw_rate + 0.001) * (1.0 + accent * 0.35),
-				-0.95, 0.95)
-		bank_target = clampf(bank_target, -0.95 if dance_bank > 0.02 else -0.65, 0.95 if dance_bank > 0.02 else 0.65)
+			bank_target += dance_bank * signf(yaw_rate + 0.001) * (1.0 + accent * 0.35)
+		bank_target = clampf(bank_target, -bank_lim, bank_lim)
 		# Underdamped: at a turn's exit the fish rolls a little past level and
 		# settles (#232).
 		# Dorsal-up stability (#385): healthy fish recover toward level roll.
@@ -8787,6 +8821,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		wag_amp_extra += float(mm.get("tail_amp_extra", 0.0)) * dance_blend
 		pec_amp_extra += float(mm.get("pec_flutter", 0.0)) * dance_blend
 		pec_amp_extra += float(mm.get("fin_flare", 0.0)) * dance_blend
+		pec_amp_extra += float(mm.get("motion_trail", 0.0)) * dance_blend * 0.55
 		if float(mm.get("downbeat_pulse", 0.0)) > 0.5:
 			wag_amp_extra += 0.14 * dance_blend
 		_music_kick_pulse = maxf(_music_kick_pulse - dt * 5.0, float(mm.get("kick_thump", 0.0)) * dance_blend)
@@ -8800,7 +8835,10 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		var glide: float = float(mm.get("glide_hold", 0.0))
 		var phase_rate: float = 0.18 if glide > 0.45 else 1.0
 		if dance_freeze > 0.55:
-			phase_rate = 0.0
+			# CREATURE_MOTION #677 — moving hold: pecs/breath/eyes keep going.
+			phase_rate = 0.12
+			pec_amp_extra = maxf(pec_amp_extra, 0.10)
+			_music_eye_flash = maxf(_music_eye_flash, 0.10 * dance_blend)
 		elif bow > 0.12:
 			phase_rate = lerpf(phase_rate, 0.35, bow)
 		# Dancing beats to the music, not the stroke clock: the difference
@@ -8846,21 +8884,29 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		if _brake_pose > 0.12:
 			_tail_pivot.rotation.y += _brake_pose * 0.38
 		if _music_trail_ghost > 0.02:
-			_tail_pivot.rotation.y += sin(_swim_phase * 1.45) * _music_trail_ghost * 0.12
-			_tail_pivot.scale.z = lerpf(1.0, 1.06, _music_trail_ghost)
-		elif absf(_tail_pivot.scale.z - 1.0) > 0.01:
+			# CREATURE_MOTION #683 — trail is fin spread / follow-through, not tail scale.
+			_tail_pivot.rotation.y += sin(_swim_phase * 1.45) * _music_trail_ghost * 0.08
+			pec_amp_extra += _music_trail_ghost * 0.32
+		if absf(_tail_pivot.scale.z - 1.0) > 0.01:
 			_tail_pivot.scale.z = lerpf(_tail_pivot.scale.z, 1.0, 1.0 - exp(-dt * 6.0))
 	if _body_mid_pivot != null:
 		_body_mid_pivot.rotation.y = sin(_swim_phase + body_phase) \
 			* (body_amp + wag_amp_extra * 0.4) \
 			+ clampf(_turn_lean, -0.22, 0.22) * body_flex
 		# The gravid bulge is the rest scale; the music kick pulses on top.
+		# Stronger thump so generative onsets read on-body, not just in bank.
 		if _music_kick_pulse > 0.02:
-			var kick_scale: float = 1.0 + _music_kick_pulse * 0.03
-			_body_mid_pivot.scale = _body_mid_rest_scale * Vector3(kick_scale, kick_scale * 0.92, 1.0)
-		elif not _body_mid_pivot.scale.is_equal_approx(_body_mid_rest_scale):
-			_body_mid_pivot.scale = _body_mid_pivot.scale.lerp(_body_mid_rest_scale,
-				1.0 - exp(-dt * 8.0))
+			var kick_scale: float = 1.0 + _music_kick_pulse * 0.055
+			_body_mid_pivot.scale = _body_mid_rest_scale * Vector3(kick_scale, kick_scale * 0.9, 1.0)
+			_body_mid_pivot.rotation.x = lerpf(_body_mid_pivot.rotation.x,
+				-_music_kick_pulse * 0.08, 1.0 - exp(-dt * 14.0))
+		else:
+			if not _body_mid_pivot.scale.is_equal_approx(_body_mid_rest_scale):
+				_body_mid_pivot.scale = _body_mid_pivot.scale.lerp(_body_mid_rest_scale,
+					1.0 - exp(-dt * 8.0))
+			if absf(_body_mid_pivot.rotation.x) > 0.002:
+				_body_mid_pivot.rotation.x = lerpf(_body_mid_pivot.rotation.x, 0.0,
+					1.0 - exp(-dt * 10.0))
 		# Collision squash (#136): compress along travel for ~2 frames, recoil.
 		if _collision_squash > 0.0:
 			_collision_squash = maxf(0.0, _collision_squash - dt * 10.0)
@@ -9014,17 +9060,27 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		# starved-for-air tank, visibly pants; a resting fish in good water
 		# breathes slow and shallow.
 		var o2_now2: float = float(sim.dissolved_o2) if sim != null and sim.get("dissolved_o2") != null else 1.0
-		var breath_load: float = clampf(0.4 + speed * 0.5 + (0.7 - o2_now2) * 1.2 + stress * 0.4, 0.4, 2.2)
+		# HOLISTIC #093 — stronger O₂ contrast at rest; calm water stays shallow.
+		var o2_drive: float = (0.72 - o2_now2) * 1.55
+		var breath_load: float = clampf(0.35 + speed * 0.42 + o2_drive + stress * 0.35, 0.35, 2.35)
 		breath_load *= 1.0 - float(aff_anim.get("breath_calm", 0.0))
 		_breath_load = lerpf(_breath_load, breath_load, 1.0 - exp(-dt * 3.0))
 		_gill_phase = Hydrodynamics.advance_phase(_gill_phase,
-			2.2 * _breath_load * _wag_freq_jitter, dt)
+			2.2 * _breath_load * _wag_freq_jitter
+			* FishTiming.oxygen_opercula_tempo(o2_now2 - _chem_o2_penalty), dt)
 		# Opercula (#303) open on the breath sine. A yawn flares them (#306);
 		# a cough clamps shut then flares (#307).
 		var breath_wave: float = sin(_gill_phase)
+		# Hero/wide views: keep the swim floor tiny so the whole school does not
+		# pant; close LOD + hypoxia amplify via FishExaggeration (#372 / #093).
+		var op_rest: float = maxf(rest_factor, 0.08 if speed > max_speed * 0.45 else 0.22)
+		# Close LOD (high ppu): full hypoxia contrast; hero/wide stays near 1×.
+		var hyp_mult: float = FishExaggeration.hypoxia_opercula_mult(o2_now2 - _chem_o2_penalty)
+		var close_w: float = clampf((lod_ppu - 6.0) / 22.0, 0.12, 1.0)
+		hyp_mult = lerpf(1.0, hyp_mult, close_w)
 		var breath_open: float = maxf(0.0, breath_wave) \
-			* (0.18 + clampf(_breath_load - 1.0, 0.0, 1.2) * 0.12) \
-			* maxf(rest_factor, 0.2)
+			* (0.14 + clampf(_breath_load - 0.9, 0.0, 1.3) * 0.16) \
+			* op_rest * hyp_mult
 		var yawn_flare: float = 0.0
 		if _fidget_kind == 2 and _fidget_remaining > 0.0:
 			# Wide open middle of the yawn, settle at the end.

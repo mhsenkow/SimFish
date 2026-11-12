@@ -177,7 +177,7 @@ func toggle_help() -> void:
 	# House header: title + × (used to be a full-width primary "Close" at
 	# the bottom, the only panel that dismissed that way). Escape and a click
 	# on the scrim close it too — see _input().
-	vb.add_child(PanelTheme.make_panel_header("Help", toggle_help))
+	vb.add_child(PanelTheme.make_panel_header("Help", toggle_help, "?"))
 	vb.add_child(PanelTheme.make_rule())
 	var search := LineEdit.new()
 	search.placeholder_text = "Search — e.g. gulping, NH₃, feed…"

@@ -458,7 +458,7 @@ func _build_ui() -> void:
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	outer.add_child(PanelTheme.make_panel_header("Sound Studio", _close))
+	outer.add_child(PanelTheme.make_panel_header("Sound Studio", _close, "M"))
 	var subtitle := PanelTheme.make_description()
 	subtitle.text = tr("A quiet score for your living world. Shape the sound, bring a track, or watch the fish listen.")
 	outer.add_child(subtitle)

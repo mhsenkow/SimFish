@@ -164,12 +164,16 @@ vec3 stratified_bed_color(vec3 world_pos, vec3 n, vec3 base_col) {
 		vec3 gap = mix(soil, cap * 0.32, 0.5);
 		vec3 gravel = sg_gravel(q, gap, cap_color.rgb * 1.08,
 			grain_palette_sample(0.25), grain_palette_sample(0.40), coarse);
+		// HOLISTIC #062 — third fine pass breaks dual-scale periodicity at glass.
+		vec3 fine = sg_gravel(q + vec2(0.19, -0.07), gap, cap_color.rgb * 0.95,
+			grain_palette_sample(0.55), grain_palette_sample(0.70), coarse * 0.38);
+		gravel = mix(gravel, fine, 0.28);
 		// Below the boundary, grains survive in proportion to how far the
 		// mixing has reached.
 		float below = clamp((depth_frac - cap_split) / max(mix_w * 2.2, 0.05), 0.0, 1.0);
 		float keep = 1.0 - smoothstep(0.0, 1.0, below);
 		float scatter = step(1.0 - keep * 0.85, sg_hash(floor(q / coarse) + 21.0));
-		float gravel_w = mix(1.0, scatter, step(0.001, below)) * grain_population;
+		float gravel_w = mix(1.0, scatter, step(0.001, below)) * min(grain_population, 0.92);
 		col = mix(col, gravel, gravel_w * (1.0 - soil_w * 0.15));
 		// Fine sand specks in the soil.
 		float spk = step(0.93, sg_hash(floor(q * 26.0)));

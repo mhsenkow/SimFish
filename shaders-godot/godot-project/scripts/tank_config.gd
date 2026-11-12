@@ -1204,7 +1204,7 @@ var custom_shrimp_count: int = 12
 # head_proportion, dorsal_height_factor, tail_fork_depth, pattern_type).
 #
 # The "life library" has THREE distinct sources — keep them straight:
-#   1. SPECIES_LIBRARY (here)      — the 18 PLAYABLE fish spawn templates.
+#   1. SPECIES_LIBRARY (here + species_shelf.gd) — playable fish spawn templates.
 #   2. real_species_library.gd     — ~52 real PLANT archetypes (discovery refs).
 #   3. real_species_fauna.gd       — ~28 real fish/shrimp/snail archetypes (refs).
 # (2) and (3) are read-only reference catalogs: SpeciesLibrary.record_discovery()
@@ -1213,9 +1213,10 @@ var custom_shrimp_count: int = 12
 # world.gd and are matched to (3) for naming. See species_library.gd for the
 # discovery/lineage tracker.
 #
-# NOTE: "freshwater_gar" and "goby" below are defined but not referenced by any
-# TANK_PRESETS stocking dict — they are manual-spawn-only (intentional spares).
-const SPECIES_LIBRARY: Dictionary = {
+# Gar, hillstream loach, and severum are stocked by dedicated presets
+# (gar_tank, hillstream_creek, cichlid_pairs). Goby stays a manual spare;
+# bumblebee_goby is the one the counter nano and the shelf actually use.
+const _SPECIES_LIBRARY_CORE: Dictionary = {
 	"glassdart": {
 		"label": "Cardinal tetra",
 		"description": "Mid-water schoolers. The signature neon-blue stripe runs the full body over a deep scarlet lower flank. Streamlined and fast.",
@@ -1422,10 +1423,10 @@ const SPECIES_LIBRARY: Dictionary = {
 			"body_elongation": 0.95,
 			"body_depth_factor": 1.0,
 			"body_shape": "fusiform",
-			"fin_length_factor": 1.55,           # extra long signature tail
+			"fin_length_factor": 1.75,           # fancy fan tail
 			"tail_fork_depth": 0.3,
 			"pattern_type": 2,
-			"finnage": 1.3,                      # fancy-male flowing fan tail
+			"finnage": 1.55,                     # fancy-male flowing fan tail
 			"swim_pattern": "shoal",
 			"tail_shape": 1,                     # fan - signature guppy
 			"eye_size_factor": 1.05,
@@ -2064,6 +2065,19 @@ const SPECIES_LIBRARY: Dictionary = {
 }
 
 
+static var SPECIES_LIBRARY: Dictionary = {}
+
+
+const _SpeciesShelf := preload("res://scripts/species_shelf.gd")
+
+
+static func _static_init() -> void:
+	SPECIES_LIBRARY = _SPECIES_LIBRARY_CORE.duplicate(true)
+	var extra: Dictionary = _SpeciesShelf.entries()
+	for key in extra.keys():
+		SPECIES_LIBRARY[key] = extra[key]
+
+
 # Heritable traits that define a species' instant-read silhouette (#47 / #83).
 # Used by smoke_silhouettes.gd to verify every library entry has a unique
 # fingerprint and by morph_label() drift detection in fish.gd.
@@ -2353,8 +2367,9 @@ const TANK_PRESETS: Dictionary = {
 	"classic_community": {
 		"label": "Classic community",
 		"stocking": {
-			"glassdart": 10, "harlequin_rasbora": 8, "corydoras": 6,
-			"dwarf_gourami": 2, "otocinclus": 3, "shrimp": 12,
+			"glassdart": 8, "neon_tetra": 6, "harlequin_rasbora": 6,
+			"corydoras": 4, "platy": 4, "black_balloon_molly": 3,
+			"otocinclus": 3, "shrimp": 8,
 		},
 		"phenotype_spread": 0.6,
 		# Default Walstad jungle — every plant species at full density.
@@ -2367,21 +2382,22 @@ const TANK_PRESETS: Dictionary = {
 		# log arc: a Walstad tank's wood is the thing the fish weave through
 		# and the moss and ferns grow on (REAL_TANK top-10 #7).
 		"wood_form": "branch",
-		"description": "The textbook beginner freshwater community: a cardinal tetra school + harlequin rasbora shoal + corydoras bottom team + a dwarf gourami territorial pair (watch the alpha chase the other off his patch and incubate fry in his throat). Cherry shrimp cleanup crew includes 2 amano-style cleaners that station near stressed fish.",
+		"description": "A gentle beginner community: cardinal and neon tetras, harlequin rasboras, corydoras, platies, and a few black balloon mollies. Cherry shrimp clean up. No predators.",
 	},
 	"community": {
 		"label": "Community (balanced)",
 		"stocking": {
-			"glassdart": 12, "mudsifter": 4, "guppy": 4, "corydoras": 3,
-			"betta": 1, "shrimp": 12,
+			"glassdart": 8, "guppy": 6, "platy": 4, "swordtail": 2,
+			"corydoras": 4, "shrimp": 8,
 		},
 		"phenotype_spread": 1.0,
-		"description": "Balanced mix: tetras + guppies + bottom group + 1 betta apex.",
+		"description": "Livebearers and a tetra school over a corydoras team. No betta, no puffer.",
 	},
 	"tetra_school": {
 		"label": "Tetra school (peaceful)",
 		"stocking": {
-			"glassdart": 22, "danio": 8, "shrimp": 18,
+			"glassdart": 10, "neon_tetra": 10, "ember_tetra": 8,
+			"rummy_nose": 6, "chili_rasbora": 8, "shrimp": 8,
 		},
 		"phenotype_spread": 0.5,
 		"plant_palette": {
@@ -2568,7 +2584,7 @@ const TANK_PRESETS: Dictionary = {
 	"iwagumi_school": {
 		"label": "Iwagumi (single school)",
 		# Pure cardinal-tetra school, no apex, sparse cleanup crew.
-		"stocking": {"glassdart": 18, "shrimp": 4},
+		"stocking": {"glassdart": 12, "chili_rasbora": 8, "shrimp": 4},
 		"phenotype_spread": 0.2,
 		# Pure carpet — no stem plants, no rosettes. The negative space
 		# carries the composition.
@@ -2595,7 +2611,7 @@ const TANK_PRESETS: Dictionary = {
 		# bottom team. No schooling fish, no shrimp — territorial drama is
 		# the entertainment.
 		"stocking": {
-			"angelfish": 2, "dwarf_gourami": 2, "corydoras": 5,
+			"angelfish": 2, "severum": 1, "ram": 2, "krib": 2, "corydoras": 4,
 		},
 		"phenotype_spread": 0.6,
 		# Sword-like blade plants flanking the rocks, with epiphytic java
@@ -2617,7 +2633,7 @@ const TANK_PRESETS: Dictionary = {
 			{"x":  0.55, "z": 0.0, "radius": 4, "mode": "raise"},
 			{"x":  0.0,  "z": 0.0, "radius": 3, "mode": "dig"},
 		],
-		"description": "Cichlid social drama. Two stone plateaus rise on either side of a central trough — each pair claims one. Java fern on the boulders. Cory team patrols the open lane between.",
+		"description": "Cichlids: an angelfish pair, a severum, rams, and kribs. Corydoras work the lane between two stone plateaus.",
 	},
 	"blackwater_biotope": {
 		"label": "Blackwater biotope",
@@ -2707,7 +2723,7 @@ const TANK_PRESETS: Dictionary = {
 		# Livebearers + fry + a small mid-water school. The fry matter: in
 		# the reference photo half the visible fish are juveniles hiding in
 		# the blades, which is what makes the jungle read as *lived in*.
-		"stocking": {"guppy": 8, "glassdart": 6, "shrimp": 6},
+		"stocking": {"guppy": 6, "platy": 4, "black_balloon_molly": 4, "shrimp": 6},
 		"phenotype_spread": 1.2,
 		# Valli dominates everything. This is the one preset where a single
 		# plant species is allowed to take the whole tank — the blades run
@@ -2836,7 +2852,7 @@ const TANK_PRESETS: Dictionary = {
 		"label": "Counter nano (floating garden)",
 		# Deliberately understocked. The interest is the surface: duckweed,
 		# salvinia and a hyacinth rosette trailing roots into the column.
-		"stocking": {"shrimp": 10, "guppy": 2},
+		"stocking": {"shrimp": 8, "chili_rasbora": 6, "bumblebee_goby": 3},
 		"phenotype_spread": 0.9,
 		# Epiphytes on the hardscape, nothing rooted in open substrate, and
 		# a heavy floating layer. Riccia carries the surface mat.
@@ -2852,7 +2868,76 @@ const TANK_PRESETS: Dictionary = {
 		"terrain_relief": [
 			{"x":  0.15, "z": -0.35, "radius": 3, "mode": "raise"},
 		],
-		"description": "Small rimless cube on a bathroom counter under a clip-on gooseneck LED. One upright stone, one wood branch, moss over both, and a thick floating mat of duckweed and salvinia with a hyacinth rosette. Green dust on the glass. Airline arcs in over the rim.",
+		"description": "Small rimless cube on a bathroom counter under a clip-on gooseneck LED. Chili rasboras and bumblebee gobies under a floating mat. One upright stone, moss, duckweed.",
+	},
+	"livebearer_show": {
+		"label": "Livebearer show",
+		"stocking": {
+			"guppy": 12, "endler": 6, "platy": 4, "swordtail": 3,
+			"black_balloon_molly": 3, "shrimp": 6,
+		},
+		"phenotype_spread": 1.1,
+		"description": "Fancy guppies, endlers, platies, swordtails, and black balloon mollies. The colony is the point.",
+	},
+	"molly_tank": {
+		"label": "Balloon molly tank",
+		"stocking": {"black_balloon_molly": 8, "gold_balloon_molly": 4, "sailfin_molly": 2},
+		"phenotype_spread": 0.4,
+		"description": "Black and gold balloon mollies, plus a pair of sailfins.",
+	},
+	"angel_tank": {
+		"label": "Angelfish tank",
+		"stocking": {"angelfish": 4, "neon_tetra": 10, "corydoras": 4},
+		"phenotype_spread": 0.35,
+		"description": "A small angelfish group with neon tetras as dither and corydoras on the floor.",
+	},
+	"mbuna_rift": {
+		"label": "Mbuna rift",
+		"stocking": {"yellow_lab": 4, "demasoni": 4, "acei": 5},
+		"phenotype_spread": 0.25,
+		"description": "Rock-lake mbuna only: yellow labs, demasoni, and acei. No tetras, no plants they can uproot.",
+	},
+	"discus_planted": {
+		"label": "Discus planted",
+		"stocking": {"discus": 5, "rummy_nose": 8, "corydoras": 4},
+		"phenotype_spread": 0.3,
+		"description": "A slow discus group, a rummy-nose dither school, and corydoras.",
+	},
+	"betta_tank": {
+		"label": "Betta tank",
+		"stocking": {"halfmoon_betta": 1, "shrimp": 6},
+		"phenotype_spread": 0.1,
+		"description": "One halfmoon betta and a few shrimp. No other fish.",
+	},
+	"pea_puffer_tank": {
+		"label": "Pea puffer planted",
+		"stocking": {"pea_puffer": 3, "shrimp": 8},
+		"phenotype_spread": 0.2,
+		"description": "A few pea puffers in plants. They are hunters, not community fish.",
+	},
+	"cory_tank": {
+		"label": "Cory species tank",
+		"stocking": {"corydoras": 6, "panda_cory": 6, "pygmy_cory": 8, "julii_cory": 4},
+		"phenotype_spread": 0.3,
+		"description": "Corydoras of several kinds, including pygmies that leave the floor.",
+	},
+	"oscar_tank": {
+		"label": "Oscar tank",
+		"stocking": {"oscar": 1},
+		"phenotype_spread": 0.1,
+		"description": "A single oscar. Nothing else it can eat.",
+	},
+	"hillstream_creek": {
+		"label": "Hillstream creek",
+		"stocking": {"hillstream_loach": 4, "panda_garra": 3, "otocinclus": 4},
+		"phenotype_spread": 0.2,
+		"description": "Current-loving grazers: hillstream loaches, panda garra, and otos.",
+	},
+	"gar_tank": {
+		"label": "Gar tank",
+		"stocking": {"freshwater_gar": 1, "danio": 6},
+		"phenotype_spread": 0.2,
+		"description": "One freshwater gar and a fast dither school. Not a community tank.",
 	},
 }
 

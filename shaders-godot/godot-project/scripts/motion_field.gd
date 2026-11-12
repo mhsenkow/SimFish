@@ -83,8 +83,9 @@ static func threat_avoid_steer(f: Node, effective_max: float) -> Vector3:
 	return away.normalized() * effective_max * w * 0.35
 
 
-static func tick_music_sweep(fish_arr: Array, sweep: float, beat_phase: float) -> void:
-	_MotionWaveScript.tick_music_sweep(fish_arr, sweep, beat_phase)
+static func tick_music_sweep(fish_arr: Array, sweep: float, beat_phase: float,
+		phrase_state: String = "", downbeat: bool = false) -> void:
+	_MotionWaveScript.tick_music_sweep(fish_arr, sweep, beat_phase, phrase_state, downbeat)
 
 
 static func deposit_feeding_burst(world: Node, origin: Vector3, strength: float = 0.18) -> void:

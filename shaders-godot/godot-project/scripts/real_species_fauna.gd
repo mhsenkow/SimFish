@@ -162,6 +162,36 @@ static func entries() -> Array:
 			},
 		},
 		{
+			"id": "black_balloon_molly", "common_name": "Black balloon molly",
+			"latin_name": "Poecilia sphenops", "organism": "fish",
+			"role": "Livebearer", "origin": "Central America",
+			"description": "Short round black livebearer.",
+			"genome": {
+				"body_shape": "globiform", "body_depth_factor": 1.46,
+				"is_livebearer": true, "base_color": _c(18, 16, 20),
+			},
+		},
+		{
+			"id": "ram", "common_name": "Ram cichlid",
+			"latin_name": "Mikrogeophagus ramirezi", "organism": "fish",
+			"role": "Dwarf cichlid", "origin": "South America",
+			"description": "Small round cichlid with a tall profile.",
+			"genome": {
+				"body_shape": "compressed", "body_depth_factor": 1.36,
+				"pattern_type": 9, "base_color": _c(214, 170, 64),
+			},
+		},
+		{
+			"id": "oscar", "common_name": "Oscar",
+			"latin_name": "Astronotus ocellatus", "organism": "fish",
+			"role": "Large cichlid", "origin": "South America",
+			"description": "Big spotted cichlid.",
+			"genome": {
+				"body_shape": "compressed", "body_depth_factor": 1.62,
+				"pattern_type": 2, "base_color": _c(120, 78, 48),
+			},
+		},
+		{
 			"id": "clownfish", "common_name": "Clownfish",
 			"latin_name": "Amphiprion", "organism": "fish",
 			"role": "Reef anemone symbiont", "origin": "Indo-Pacific",
