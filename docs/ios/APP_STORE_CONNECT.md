@@ -89,9 +89,9 @@ xcodebuild -exportArchive -archivePath Archive.xcarchive \
 6. Upload IPA → assign to 1.0 → screenshots (iPhone 6.7" + iPad 13")  
 7. App Privacy → Data Not Collected  
 
-## Status (2026-11-07)
-- Desktop and the site ship **v0.2.54**. App Store Connect marketing version remains **1.0**; binary **0.2.54 / 67**.
-- ASC app `6823230910` — iOS + macOS are **Ready for Sale** on 1.0; upload build **66** into a new version (or update) and submit.
+## Status (2026-11-12)
+- Desktop and the site ship **v0.2.54**. ASC marketing string stays **1.0.x**; binary **0.2.54 / 67**.
+- ASC app `6823230910` — iOS **1.0.2** submitted with build **67** (**Waiting for Review**). macOS **1.0.1** remains Ready for Sale.
 - Price **$2.99** USA base; categories Games → Simulation + Casual; secondary Entertainment  
 - Screenshots: iPhone 6.7" ×3, iPad 13" ×3, Mac 2560×1600 ×3 (App Preview video **not** required)  
 - Privacy: Data Not Collected + privacy URL live  
